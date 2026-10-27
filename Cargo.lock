@@ -702,6 +702,7 @@ name = "libaflgo_targets"
 version = "0.1.0"
 dependencies = [
  "libafl",
+ "libafl_targets",
  "libaflgo",
  "libc",
  "serde",
@@ -1019,6 +1020,30 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+
+[[package]]
+name = "selectfuzz"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "libafl",
+ "libafl_targets",
+ "libaflgo",
+ "libaflgo_targets",
+ "mimalloc",
+ "nix",
+]
+
+[[package]]
+name = "selectfuzz_cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "libafl",
+ "libaflgo",
+ "libc",
+ "serde",
+]
 
 [[package]]
 name = "semver"

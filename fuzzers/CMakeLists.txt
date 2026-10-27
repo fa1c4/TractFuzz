@@ -1,4 +1,4 @@
-set(FUZZERS aflgo hawkeye dafl beacon)
+set(FUZZERS aflgo hawkeye dafl beacon selectfuzz)
 
 foreach(FUZZER ${FUZZERS})
   # Reset feature flags
@@ -8,6 +8,7 @@ foreach(FUZZER ${FUZZERS})
   unset(DAFL_MODE)
   unset(BEACON_ENTRY_PRUNING)
   unset(BEACON_CLI_MODE)
+  unset(SELECTFUZZ_MODE)
 
   add_subdirectory(${FUZZER})
 
@@ -15,6 +16,9 @@ foreach(FUZZER ${FUZZERS})
   # the wrapper in this parent scope so the BEACON link pass is actually on.
   if(FUZZER STREQUAL "beacon")
     set(BEACON_ENTRY_PRUNING TRUE)
+  endif()
+  if(FUZZER STREQUAL "selectfuzz")
+    set(SELECTFUZZ_MODE TRUE)
   endif()
 
   # Corrosion does not currently support installing libraries through CMake, so
@@ -108,6 +112,20 @@ file(GENERATE OUTPUT "libaflgo_beacon_cli_cc"
 install(PROGRAMS "${CMAKE_CURRENT_BINARY_DIR}/libaflgo_beacon_cli_cc" TYPE BIN)
 install(PROGRAMS "${CMAKE_CURRENT_BINARY_DIR}/libaflgo_beacon_cli_cc" TYPE BIN
         RENAME "libaflgo_beacon_cli_cxx")
+
+set(BEACON_CLI_MODE FALSE)
+set(BEACON_ENTRY_PRUNING FALSE)
+set(SELECTFUZZ_CLI_MODE TRUE)
+set(SELECTFUZZ_MODE TRUE)
+set(FUZZER_PATH
+    "${LIBS_INSTALL_PREFIX}/$<TARGET_FILE_NAME:SelectFuzzCliRuntime>")
+configure_file("${PROJECT_SOURCE_DIR}/wrapper/libaflgo_cc.in"
+               "libaflgo_selectfuzz_cli_cc.gen" @ONLY)
+file(GENERATE OUTPUT "libaflgo_selectfuzz_cli_cc"
+     INPUT "${CMAKE_CURRENT_BINARY_DIR}/libaflgo_selectfuzz_cli_cc.gen")
+install(PROGRAMS "${CMAKE_CURRENT_BINARY_DIR}/libaflgo_selectfuzz_cli_cc" TYPE BIN)
+install(PROGRAMS "${CMAKE_CURRENT_BINARY_DIR}/libaflgo_selectfuzz_cli_cc" TYPE BIN
+        RENAME "libaflgo_selectfuzz_cli_cxx")
 
 set(FUZZERS
     ${FUZZERS}

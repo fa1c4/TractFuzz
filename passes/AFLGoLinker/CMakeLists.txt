@@ -2,6 +2,7 @@ add_llvm_library(
   ${AFLGO_LINKER_PLUGIN_NAME}
   MODULE
   DAFL.cpp
+  SelectFuzz.cpp
   Beacon.cpp
   DistanceInstrumentation.cpp
   DuplicateTargetRemoval.cpp

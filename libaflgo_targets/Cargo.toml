@@ -8,5 +8,6 @@ rust-version.workspace = true
 [dependencies]
 libaflgo = { path = "../libaflgo" }
 libafl = { workspace = true }
+libafl_targets = { workspace = true }
 serde = { version = "1.0.160", features = ["derive"] }
 libc = "0.2"

@@ -1,5 +1,6 @@
 #include <AFLGoLinker/DAFL.hpp>
 #include <AFLGoLinker/Beacon.hpp>
+#include <AFLGoLinker/SelectFuzz.hpp>
 #include <AFLGoLinker/DistanceInstrumentation.hpp>
 #include <AFLGoLinker/DuplicateTargetRemoval.hpp>
 #include <AFLGoLinker/FunctionDistanceInstrumentation.hpp>
@@ -7,6 +8,7 @@
 
 #include <Analysis/BasicBlockDistance.hpp>
 #include <Analysis/DAFL.hpp>
+#include <Analysis/SelectFuzz.hpp>
 #include <Analysis/ExtendedCallGraph.hpp>
 #include <Analysis/FunctionDistance.hpp>
 #include <Analysis/TargetDetection.hpp>
@@ -36,6 +38,13 @@ static cl::opt<bool>
 
 static cl::opt<bool> ClDAFL("dafl", cl::desc("Enable DAFL instrumentation"),
                             cl::init(false));
+
+static cl::opt<bool> ClSelectFuzz("selectfuzz",
+                                cl::desc("Enable selective SelectFuzz feedback"),
+                                cl::init(false));
+static cl::opt<std::string> ClSelectFuzzManifest(
+    "selectfuzz-manifest", cl::desc("Versioned SelectFuzz block manifest"),
+    cl::init(""));
 
 static cl::opt<bool> ClBeaconEntryPruning(
     "beacon-entry-pruning",
@@ -72,7 +81,9 @@ static void addPasses(ModulePassManager &MPM) {
   if (ClBeaconEntryPruning)
     MPM.addPass(BeaconEntryPruningPass());
 
-  if (ClDAFL) {
+  if (ClSelectFuzz) {
+    MPM.addPass(SelectFuzzInstrumentationPass(ClSelectFuzzManifest));
+  } else if (ClDAFL) {
     MPM.addPass(DAFLInstrumentationPass(ClDAFLOutputFile));
   } else {
     if (ClTraceFunctionDistance) {
@@ -81,11 +92,13 @@ static void addPasses(ModulePassManager &MPM) {
     MPM.addPass(AFLGoDistanceInstrumentationPass());
   }
 
-  SanitizerCoverageOptions Options;
-  Options.CoverageType = SanitizerCoverageOptions::SCK_Edge;
-  Options.TracePCGuard = true;
-  Options.TraceCmp = true;
-  MPM.addPass(ModuleSanitizerCoveragePass(Options));
+  if (!ClSelectFuzz) {
+    SanitizerCoverageOptions Options;
+    Options.CoverageType = SanitizerCoverageOptions::SCK_Edge;
+    Options.TracePCGuard = true;
+    Options.TraceCmp = true;
+    MPM.addPass(ModuleSanitizerCoveragePass(Options));
+  }
 
   MPM.addPass(AFLGoTargetInjectionFixupPass());
 }
@@ -104,6 +117,7 @@ llvm::PassPluginLibraryInfo getAFLGoLinkerPluginInfo() {
                                 ClDAFLDebug, ClDAFLVerbose);
           });
           MAM.registerPass([] { return ExtendedCallGraphAnalysis(); });
+          MAM.registerPass([] { return SelectFuzzAnalysis(ClExtendCG); });
           MAM.registerPass([] {
             return AFLGoFunctionDistanceAnalysis(ClExtendCG, ClHawkeyeDistance);
           });

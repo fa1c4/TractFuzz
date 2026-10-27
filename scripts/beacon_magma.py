@@ -451,9 +451,9 @@ def run(row, seconds, mode, trial):
     exported = subprocess.run(["nm", "-D", binary], capture_output=True, text=True, check=True)
     if not is_cli and "__beacon_magma_reset" not in exported.stdout:
         return "instrumentation_failure", "Magma per-input reset hook was not exported", time.monotonic() - started
-    if not has_directed_target_call(binary):
-        classification = "fixed_entry_target_unreachable" if bug == "PDF020" else "instrumentation_failure"
-        return classification, "no directed target call survived linking", time.monotonic() - started
+    directed_target_call = has_directed_target_call(binary)
+    if not directed_target_call and bug != "PDF020":
+        return "instrumentation_failure", "no directed target call survived linking", time.monotonic() - started
     runtime_stamp.write_text(runtime_hash + "\n")
 
     corpus = target / "corpus" / entry
@@ -501,7 +501,10 @@ def run(row, seconds, mode, trial):
         record = next(csv.DictReader(stream), {})
     if int(record.get(f"{bug}_T", "0")) > 0:
         replay_inputs(row, mode, trial, 0, include_corpus=False)
-    return "campaign_complete", str(canaries), time.monotonic() - started
+    detail = str(canaries)
+    if not directed_target_call:
+        detail += "; no directed target call survived linking"
+    return "campaign_complete", detail, time.monotonic() - started
 
 
 def campaign_metrics(bug, mode, trial=""):
