@@ -90,6 +90,10 @@ BEACON_ENTRY_PRUNING = "@BEACON_ENTRY_PRUNING@" == "TRUE"
 BEACON_CLI_MODE = "@BEACON_CLI_MODE@" == "TRUE"
 SELECTFUZZ_MODE = "@SELECTFUZZ_MODE@" == "TRUE"
 SELECTFUZZ_CLI_MODE = "@SELECTFUZZ_CLI_MODE@" == "TRUE"
+HALO_CLI_MODE = "@HALO_CLI_MODE@" == "TRUE"
+HALO_MODE = "@HALO_MODE@" == "TRUE"
+IDFUZZ_MODE = "@IDFUZZ_MODE@" == "TRUE"
+IDFUZZ_CLI_MODE = "@IDFUZZ_CLI_MODE@" == "TRUE"
 
 SKIP_TARGETS_CHECK = os.environ.get("AFLGO_SKIP_TARGETS_CHECK", "0") == "1"
 DAFL_INPUT = os.environ.get("AFLGO_DAFL_INPUT", "")
@@ -97,6 +101,11 @@ DAFL_OUTPUT = os.environ.get("AFLGO_DAFL_OUTPUT", "")
 SELECTFUZZ_MANIFEST = os.environ.get("AFLGO_SELECTFUZZ_MANIFEST", "")
 SELECTFUZZ_EXTEND_CG = os.environ.get("AFLGO_SELECTFUZZ_EXTEND_CG", "0") == "1"
 SELECTFUZZ_ENTRY = os.environ.get("AFLGO_SELECTFUZZ_ENTRY", "")
+HALO_ENTRY = os.environ.get("AFLGO_HALO_ENTRY", "")
+HALO_EXTEND_CG = HALO_MODE and os.environ.get("AFLGO_HALO_EXTEND_CG", "0") == "1"
+IDFUZZ_ENTRY = os.environ.get("AFLGO_IDFUZZ_ENTRY", "")
+IDFUZZ_MANIFEST = os.environ.get("AFLGO_IDFUZZ_MANIFEST", "")
+IDFUZZ_EXTEND_CG = IDFUZZ_MODE and os.environ.get("AFLGO_IDFUZZ_EXTEND_CG", "0") == "1"
 
 
 def check_resource(resource_file):
@@ -138,7 +147,7 @@ COMPILER_FLAGS = [
     "-g",  # required for targeting
     "-flto",
 ] + compiler_plugin_flags(AFLGO_COMPILER_PLUGIN_PATH)
-if not (BEACON_CLI_MODE or SELECTFUZZ_CLI_MODE):
+if not (BEACON_CLI_MODE or SELECTFUZZ_CLI_MODE or HALO_CLI_MODE or IDFUZZ_CLI_MODE):
     COMPILER_FLAGS += compiler_plugin_flags(LIBAFL_AUTOTOKENS_PLUGIN_PATH)
     COMPILER_FLAGS += compiler_plugin_flags(LIBAFL_CMPLOG_RTN_PLUGIN_PATH)
 
@@ -152,7 +161,7 @@ def generate_compiler_flags(targets, is_asm):
         if SKIP_TARGETS_CHECK:
             compiler_flags += ["-mllvm", "-targets-no-error"]
 
-    if EXTEND_CALLGRAPH or DAFL_MODE or (SELECTFUZZ_MODE and SELECTFUZZ_EXTEND_CG):
+    if EXTEND_CALLGRAPH or DAFL_MODE or (SELECTFUZZ_MODE and SELECTFUZZ_EXTEND_CG) or HALO_EXTEND_CG or IDFUZZ_EXTEND_CG:
         compiler_flags += ["-Xclang", "-no-opaque-pointers"]
 
     return compiler_flags
@@ -177,16 +186,19 @@ LINKER_FLAGS = [
 def generate_linker_flags(linker_output_path: Optional[Path] = None):
     # Magma build scripts also link configure probes and unrelated tools. Run
     # the whole-program analysis on the fixed benchmark entry only.
-    if (SELECTFUZZ_MODE and SELECTFUZZ_ENTRY and linker_output_path is not None
-            and linker_output_path.stem != Path(SELECTFUZZ_ENTRY).stem):
+    chosen_entry = (SELECTFUZZ_ENTRY if SELECTFUZZ_MODE else
+                    HALO_ENTRY if HALO_MODE else
+                    IDFUZZ_ENTRY if IDFUZZ_MODE else "")
+    if (chosen_entry and linker_output_path is not None
+            and linker_output_path.stem != Path(chosen_entry).stem):
         return LINKER_FLAGS[:]
 
     linker_forward_flags = LINKER_FORWARD_FLAGS[:]
 
-    if EXTEND_CALLGRAPH or DAFL_MODE or (SELECTFUZZ_MODE and SELECTFUZZ_EXTEND_CG):
+    if EXTEND_CALLGRAPH or DAFL_MODE or (SELECTFUZZ_MODE and SELECTFUZZ_EXTEND_CG) or HALO_EXTEND_CG or IDFUZZ_EXTEND_CG:
         linker_forward_flags += ["-plugin-opt=no-opaque-pointers"]
 
-    if EXTEND_CALLGRAPH or (SELECTFUZZ_MODE and SELECTFUZZ_EXTEND_CG):
+    if EXTEND_CALLGRAPH or (SELECTFUZZ_MODE and SELECTFUZZ_EXTEND_CG) or HALO_EXTEND_CG or IDFUZZ_EXTEND_CG:
         linker_forward_flags += [
             "-mllvm",
             "-extend-cg",
@@ -248,6 +260,15 @@ def generate_linker_flags(linker_output_path: Optional[Path] = None):
                 manifest = manifest.with_name(
                     f"{manifest.stem}-{linker_output_path.stem}{manifest.suffix}")
             linker_forward_flags += ["-mllvm", f"-selectfuzz-manifest={manifest}"]
+
+    if IDFUZZ_MODE:
+        linker_forward_flags += ["-mllvm", "-idfuzz"]
+        if IDFUZZ_MANIFEST:
+            manifest = Path(IDFUZZ_MANIFEST)
+            if linker_output_path is not None:
+                manifest = manifest.with_name(
+                    f"{manifest.stem}-{linker_output_path.stem}{manifest.suffix}")
+            linker_forward_flags += ["-mllvm", f"-idfuzz-manifest={manifest}"]
 
     if BEACON_ENTRY_PRUNING:
         linker_forward_flags += ["-mllvm", "-beacon-entry-pruning"]

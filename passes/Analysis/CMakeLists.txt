@@ -1,4 +1,4 @@
-add_library(Analysis TargetDetection.cpp DAFL.cpp SelectFuzz.cpp FunctionDistance.cpp
+add_library(Analysis TargetDetection.cpp DAFL.cpp SelectFuzz.cpp IDFuzz.cpp FunctionDistance.cpp
                      BasicBlockDistance.cpp ExtendedCallGraphAnalysis.cpp)
 set_property(TARGET Analysis PROPERTY POSITION_INDEPENDENT_CODE TRUE)
 target_compile_definitions(Analysis PRIVATE ${LLVM_DEFINITIONS})

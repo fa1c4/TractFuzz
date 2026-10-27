@@ -1,6 +1,7 @@
 #include <AFLGoLinker/DAFL.hpp>
 #include <AFLGoLinker/Beacon.hpp>
 #include <AFLGoLinker/SelectFuzz.hpp>
+#include <AFLGoLinker/IDFuzz.hpp>
 #include <AFLGoLinker/DistanceInstrumentation.hpp>
 #include <AFLGoLinker/DuplicateTargetRemoval.hpp>
 #include <AFLGoLinker/FunctionDistanceInstrumentation.hpp>
@@ -9,6 +10,7 @@
 #include <Analysis/BasicBlockDistance.hpp>
 #include <Analysis/DAFL.hpp>
 #include <Analysis/SelectFuzz.hpp>
+#include <Analysis/IDFuzz.hpp>
 #include <Analysis/ExtendedCallGraph.hpp>
 #include <Analysis/FunctionDistance.hpp>
 #include <Analysis/TargetDetection.hpp>
@@ -45,6 +47,11 @@ static cl::opt<bool> ClSelectFuzz("selectfuzz",
 static cl::opt<std::string> ClSelectFuzzManifest(
     "selectfuzz-manifest", cl::desc("Versioned SelectFuzz block manifest"),
     cl::init(""));
+
+static cl::opt<bool> ClIDFuzz("idfuzz", cl::desc("Enable IDFuzz dominator probes"),
+                             cl::init(false));
+static cl::opt<std::string> ClIDFuzzManifest(
+    "idfuzz-manifest", cl::desc("Versioned IDFuzz dominator manifest"), cl::init(""));
 
 static cl::opt<bool> ClBeaconEntryPruning(
     "beacon-entry-pruning",
@@ -92,6 +99,8 @@ static void addPasses(ModulePassManager &MPM) {
     MPM.addPass(AFLGoDistanceInstrumentationPass());
   }
 
+  if (ClIDFuzz) MPM.addPass(IDFuzzInstrumentationPass(ClIDFuzzManifest));
+
   if (!ClSelectFuzz) {
     SanitizerCoverageOptions Options;
     Options.CoverageType = SanitizerCoverageOptions::SCK_Edge;
@@ -118,6 +127,7 @@ llvm::PassPluginLibraryInfo getAFLGoLinkerPluginInfo() {
           });
           MAM.registerPass([] { return ExtendedCallGraphAnalysis(); });
           MAM.registerPass([] { return SelectFuzzAnalysis(ClExtendCG); });
+          MAM.registerPass([] { return IDFuzzAnalysis(); });
           MAM.registerPass([] {
             return AFLGoFunctionDistanceAnalysis(ClExtendCG, ClHawkeyeDistance);
           });

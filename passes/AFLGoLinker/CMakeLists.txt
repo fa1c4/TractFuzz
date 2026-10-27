@@ -3,6 +3,7 @@ add_llvm_library(
   MODULE
   DAFL.cpp
   SelectFuzz.cpp
+  IDFuzz.cpp
   Beacon.cpp
   DistanceInstrumentation.cpp
   DuplicateTargetRemoval.cpp

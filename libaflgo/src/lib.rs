@@ -17,6 +17,8 @@ use libafl::{
 use serde::{Deserialize, Serialize};
 
 pub mod dafl;
+pub mod halo;
+pub mod idfuzz;
 pub mod selectfuzz;
 pub use dafl::{DAFLFeedback, DAFLObserver, DAFLPowerMutationalStage, DAFLWeightedScheduler};
 

@@ -10,6 +10,11 @@ members = [
     "fuzzers/selectfuzz",
     "fuzzers/beacon_cli",
     "fuzzers/selectfuzz_cli",
+    "fuzzers/halo",
+    "fuzzers/halo_cli",
+    "fuzzers/halo_control_cli",
+    "fuzzers/idfuzz",
+    "fuzzers/idfuzz_cli",
 ]
 default-members = ["libaflgo_targets", "libaflgo"]
 package.rust-version = "1.71"

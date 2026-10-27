@@ -1,4 +1,4 @@
-set(FUZZERS aflgo hawkeye dafl beacon selectfuzz)
+set(FUZZERS aflgo hawkeye dafl beacon selectfuzz halo idfuzz)
 
 foreach(FUZZER ${FUZZERS})
   # Reset feature flags
@@ -9,6 +9,11 @@ foreach(FUZZER ${FUZZERS})
   unset(BEACON_ENTRY_PRUNING)
   unset(BEACON_CLI_MODE)
   unset(SELECTFUZZ_MODE)
+  unset(SELECTFUZZ_CLI_MODE)
+  unset(HALO_CLI_MODE)
+  unset(HALO_MODE)
+  unset(IDFUZZ_MODE)
+  unset(IDFUZZ_CLI_MODE)
 
   add_subdirectory(${FUZZER})
 
@@ -19,6 +24,12 @@ foreach(FUZZER ${FUZZERS})
   endif()
   if(FUZZER STREQUAL "selectfuzz")
     set(SELECTFUZZ_MODE TRUE)
+  endif()
+  if(FUZZER STREQUAL "halo")
+    set(HALO_MODE TRUE)
+  endif()
+  if(FUZZER STREQUAL "idfuzz")
+    set(IDFUZZ_MODE TRUE)
   endif()
 
   # Corrosion does not currently support installing libraries through CMake, so
@@ -101,6 +112,7 @@ endforeach()
 
 # Command-line Magma entries need their own instrumentation callbacks, without
 # the in-process LibFuzzer main that the Rust static library provides.
+set(HALO_MODE FALSE)
 set(BEACON_CLI_MODE TRUE)
 set(BEACON_ENTRY_PRUNING TRUE)
 set(FUZZER_PATH
@@ -126,6 +138,34 @@ file(GENERATE OUTPUT "libaflgo_selectfuzz_cli_cc"
 install(PROGRAMS "${CMAKE_CURRENT_BINARY_DIR}/libaflgo_selectfuzz_cli_cc" TYPE BIN)
 install(PROGRAMS "${CMAKE_CURRENT_BINARY_DIR}/libaflgo_selectfuzz_cli_cc" TYPE BIN
         RENAME "libaflgo_selectfuzz_cli_cxx")
+
+set(SELECTFUZZ_CLI_MODE FALSE)
+set(SELECTFUZZ_MODE FALSE)
+set(HALO_CLI_MODE TRUE)
+set(HALO_MODE TRUE)
+set(FUZZER_PATH
+    "${LIBS_INSTALL_PREFIX}/$<TARGET_FILE_NAME:HaloCliRuntime>")
+configure_file("${PROJECT_SOURCE_DIR}/wrapper/libaflgo_cc.in"
+               "libaflgo_halo_cli_cc.gen" @ONLY)
+file(GENERATE OUTPUT "libaflgo_halo_cli_cc"
+     INPUT "${CMAKE_CURRENT_BINARY_DIR}/libaflgo_halo_cli_cc.gen")
+install(PROGRAMS "${CMAKE_CURRENT_BINARY_DIR}/libaflgo_halo_cli_cc" TYPE BIN)
+install(PROGRAMS "${CMAKE_CURRENT_BINARY_DIR}/libaflgo_halo_cli_cc" TYPE BIN
+        RENAME "libaflgo_halo_cli_cxx")
+
+set(HALO_CLI_MODE FALSE)
+set(HALO_MODE FALSE)
+set(IDFUZZ_CLI_MODE TRUE)
+set(IDFUZZ_MODE TRUE)
+set(FUZZER_PATH
+    "${LIBS_INSTALL_PREFIX}/$<TARGET_FILE_NAME:IDFuzzCliRuntime>")
+configure_file("${PROJECT_SOURCE_DIR}/wrapper/libaflgo_cc.in"
+               "libaflgo_idfuzz_cli_cc.gen" @ONLY)
+file(GENERATE OUTPUT "libaflgo_idfuzz_cli_cc"
+     INPUT "${CMAKE_CURRENT_BINARY_DIR}/libaflgo_idfuzz_cli_cc.gen")
+install(PROGRAMS "${CMAKE_CURRENT_BINARY_DIR}/libaflgo_idfuzz_cli_cc" TYPE BIN)
+install(PROGRAMS "${CMAKE_CURRENT_BINARY_DIR}/libaflgo_idfuzz_cli_cc" TYPE BIN
+        RENAME "libaflgo_idfuzz_cli_cxx")
 
 set(FUZZERS
     ${FUZZERS}

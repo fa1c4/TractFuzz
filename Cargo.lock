@@ -491,6 +491,40 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2fabcfbdc87f4758337ca535fb41a6d701b65693ce38287d856d1674551ec9b"
 
 [[package]]
+name = "halo"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "libafl",
+ "libafl_targets",
+ "libaflgo",
+ "libaflgo_targets",
+ "mimalloc",
+]
+
+[[package]]
+name = "halo_cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "libafl",
+ "libaflgo",
+ "libc",
+ "serde",
+]
+
+[[package]]
+name = "halo_control_cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "libafl",
+ "libaflgo",
+ "libc",
+ "serde",
+]
+
+[[package]]
 name = "hash32"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -566,6 +600,29 @@ dependencies = [
  "libc",
  "match_cfg",
  "winapi",
+]
+
+[[package]]
+name = "idfuzz"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "libafl",
+ "libafl_targets",
+ "libaflgo",
+ "libaflgo_targets",
+ "mimalloc",
+]
+
+[[package]]
+name = "idfuzz_cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "libafl",
+ "libaflgo",
+ "libc",
+ "serde",
 ]
 
 [[package]]
@@ -695,6 +752,7 @@ version = "0.1.0"
 dependencies = [
  "libafl",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

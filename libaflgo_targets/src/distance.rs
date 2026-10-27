@@ -42,6 +42,12 @@ impl DistanceStats {
 
 static STATS: DistanceStats = DistanceStats::new();
 
+/// AFLGo's average instrumented basic-block distance for the current input.
+pub fn current_distance() -> Option<f64> {
+    let value = STATS.compute_test_case_distance();
+    value.is_finite().then_some(value)
+}
+
 // Called by the distance instrumentation
 #[no_mangle]
 pub extern "C" fn __aflgo_trace_bb_distance(bb_distance: u64) {
