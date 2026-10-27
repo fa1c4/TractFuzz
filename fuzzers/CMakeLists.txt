@@ -1,4 +1,4 @@
-set(FUZZERS aflgo hawkeye dafl)
+set(FUZZERS aflgo hawkeye dafl beacon)
 
 foreach(FUZZER ${FUZZERS})
   # Reset feature flags
@@ -6,8 +6,16 @@ foreach(FUZZER ${FUZZERS})
   unset(USE_HAWKEYE_DISTANCE)
   unset(TRACE_FUNCTION_DISTANCE)
   unset(DAFL_MODE)
+  unset(BEACON_ENTRY_PRUNING)
+  unset(BEACON_CLI_MODE)
 
   add_subdirectory(${FUZZER})
+
+  # Variables set by add_subdirectory are scoped to that directory. Configure
+  # the wrapper in this parent scope so the BEACON link pass is actually on.
+  if(FUZZER STREQUAL "beacon")
+    set(BEACON_ENTRY_PRUNING TRUE)
+  endif()
 
   # Corrosion does not currently support installing libraries through CMake, so
   # it is necessary to install this one manually. See:
@@ -86,6 +94,20 @@ foreach(FUZZER ${FUZZERS})
          "${CMAKE_CURRENT_BINARY_DIR}/libaflgo_${FUZZER}_cxx_test")
   endif()
 endforeach()
+
+# Command-line Magma entries need their own instrumentation callbacks, without
+# the in-process LibFuzzer main that the Rust static library provides.
+set(BEACON_CLI_MODE TRUE)
+set(BEACON_ENTRY_PRUNING TRUE)
+set(FUZZER_PATH
+    "${LIBS_INSTALL_PREFIX}/$<TARGET_FILE_NAME:BeaconCliRuntime>")
+configure_file("${PROJECT_SOURCE_DIR}/wrapper/libaflgo_cc.in"
+               "libaflgo_beacon_cli_cc.gen" @ONLY)
+file(GENERATE OUTPUT "libaflgo_beacon_cli_cc"
+     INPUT "${CMAKE_CURRENT_BINARY_DIR}/libaflgo_beacon_cli_cc.gen")
+install(PROGRAMS "${CMAKE_CURRENT_BINARY_DIR}/libaflgo_beacon_cli_cc" TYPE BIN)
+install(PROGRAMS "${CMAKE_CURRENT_BINARY_DIR}/libaflgo_beacon_cli_cc" TYPE BIN
+        RENAME "libaflgo_beacon_cli_cxx")
 
 set(FUZZERS
     ${FUZZERS}

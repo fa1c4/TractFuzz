@@ -86,6 +86,8 @@ EXTEND_CALLGRAPH = "@EXTEND_CALLGRAPH@" == "TRUE"
 USE_HAWKEYE_DISTANCE = "@USE_HAWKEYE_DISTANCE@" == "TRUE"
 TRACE_FUNCTION_DISTANCE = "@TRACE_FUNCTION_DISTANCE@" == "TRUE"
 DAFL_MODE = "@DAFL_MODE@" == "TRUE"
+BEACON_ENTRY_PRUNING = "@BEACON_ENTRY_PRUNING@" == "TRUE"
+BEACON_CLI_MODE = "@BEACON_CLI_MODE@" == "TRUE"
 
 SKIP_TARGETS_CHECK = os.environ.get("AFLGO_SKIP_TARGETS_CHECK", "0") == "1"
 DAFL_INPUT = os.environ.get("AFLGO_DAFL_INPUT", "")
@@ -130,11 +132,10 @@ COMPILER_FLAGS_EARLY = []
 COMPILER_FLAGS = [
     "-g",  # required for targeting
     "-flto",
-] + (
-    compiler_plugin_flags(AFLGO_COMPILER_PLUGIN_PATH)
-    + compiler_plugin_flags(LIBAFL_AUTOTOKENS_PLUGIN_PATH)
-    + compiler_plugin_flags(LIBAFL_CMPLOG_RTN_PLUGIN_PATH)
-)
+] + compiler_plugin_flags(AFLGO_COMPILER_PLUGIN_PATH)
+if not BEACON_CLI_MODE:
+    COMPILER_FLAGS += compiler_plugin_flags(LIBAFL_AUTOTOKENS_PLUGIN_PATH)
+    COMPILER_FLAGS += compiler_plugin_flags(LIBAFL_CMPLOG_RTN_PLUGIN_PATH)
 
 
 def generate_compiler_flags(targets, is_asm):
@@ -227,6 +228,9 @@ def generate_linker_flags(linker_output_path: Optional[Path] = None):
                 "-mllvm",
                 f"-dafl-output-file={output_path}",
             ]
+
+    if BEACON_ENTRY_PRUNING:
+        linker_forward_flags += ["-mllvm", "-beacon-entry-pruning"]
 
     flags = LINKER_FLAGS[:]
     flags.append(f"-Wl,{','.join(linker_forward_flags)}")

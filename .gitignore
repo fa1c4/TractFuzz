@@ -1,5 +1,13 @@
 build/
 compile_commands.json
 .cache/
-
 target/
+magma/
+results/**/status.lock
+__pycache__/
+
+# TractFuzz ignore files or dirs
+docs/
+plans/
+results/
+

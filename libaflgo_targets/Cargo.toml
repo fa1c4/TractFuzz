@@ -9,3 +9,4 @@ rust-version.workspace = true
 libaflgo = { path = "../libaflgo" }
 libafl = { workspace = true }
 serde = { version = "1.0.160", features = ["derive"] }
+libc = "0.2"

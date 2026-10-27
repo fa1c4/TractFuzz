@@ -1,4 +1,5 @@
 #include <AFLGoLinker/DAFL.hpp>
+#include <AFLGoLinker/Beacon.hpp>
 #include <AFLGoLinker/DistanceInstrumentation.hpp>
 #include <AFLGoLinker/DuplicateTargetRemoval.hpp>
 #include <AFLGoLinker/FunctionDistanceInstrumentation.hpp>
@@ -36,6 +37,11 @@ static cl::opt<bool>
 static cl::opt<bool> ClDAFL("dafl", cl::desc("Enable DAFL instrumentation"),
                             cl::init(false));
 
+static cl::opt<bool> ClBeaconEntryPruning(
+    "beacon-entry-pruning",
+    cl::desc("Enable conservative BEACON entry precondition checks"),
+    cl::init(false));
+
 static cl::opt<bool> ClDAFLNoTargetsNoError(
     "dafl-targets-no-error",
     cl::desc("Don't error out if DAFL targets are not found"), cl::init(false));
@@ -62,6 +68,9 @@ static cl::opt<std::string>
 
 static void addPasses(ModulePassManager &MPM) {
   MPM.addPass(DuplicateTargetRemovalPass());
+
+  if (ClBeaconEntryPruning)
+    MPM.addPass(BeaconEntryPruningPass());
 
   if (ClDAFL) {
     MPM.addPass(DAFLInstrumentationPass(ClDAFLOutputFile));

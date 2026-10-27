@@ -10,16 +10,27 @@ FetchContent_Declare(
   Corrosion
   GIT_REPOSITORY https://github.com/corrosion-rs/corrosion.git
   GIT_TAG v0.5.2)
-FetchContent_Declare(
-  Z3
-  URL https://github.com/Z3Prover/z3/releases/download/z3-4.8.12/z3-4.8.12-x64-glibc-2.31.zip
-  FIND_PACKAGE_ARGS 4.8)
+option(LIBAFLGO_USE_SYSTEM_Z3 "Use the installed Z3 headers and library" OFF)
+if(LIBAFLGO_USE_SYSTEM_Z3)
+  find_path(LIBAFLGO_Z3_INCLUDE_DIR z3++.h REQUIRED)
+  find_library(LIBAFLGO_Z3_LIBRARY z3 REQUIRED)
+  # The pinned SVF revision looks for libz3 and z3++.h below Z3_DIR.
+  set(z3_SOURCE_DIR /usr)
+else()
+  FetchContent_Declare(
+    Z3
+    URL https://github.com/Z3Prover/z3/releases/download/z3-4.8.12/z3-4.8.12-x64-glibc-2.31.zip
+    FIND_PACKAGE_ARGS 4.8)
+endif()
 FetchContent_Declare(
   SVF
   GIT_REPOSITORY https://github.com/SVF-tools/SVF.git
   GIT_TAG 0e9dabd9478f4f638cc54ecfeb3ba2191e7eab33 # June 8th, 2023
   PATCH_COMMAND git reset --hard && git apply "${CMAKE_CURRENT_SOURCE_DIR}/SVF-1282.patch")
-FetchContent_MakeAvailable(Corrosion Z3)
+FetchContent_MakeAvailable(Corrosion)
+if(NOT LIBAFLGO_USE_SYSTEM_Z3)
+  FetchContent_MakeAvailable(Z3)
+endif()
 
 # SVF picks up Z3_LIBRARIES from LLVM, so import Z3 before LLVM.
 find_package(LLVM 15 REQUIRED CONFIG)
@@ -52,6 +63,11 @@ target_include_directories(SvfCore PUBLIC "${svf_SOURCE_DIR}/svf/include"
 target_link_libraries(SvfLLVM PUBLIC SvfCore)
 set_target_properties(SvfCoreObj SvfCore SvfLLVM
                       PROPERTIES POSITION_INDEPENDENT_CODE ON)
+# The pinned SVF sources use uint32_t/uint64_t without including cstdint in
+# SVFType.h. Newer standard-library headers no longer supply those names.
+target_compile_options(SvfCoreObj PRIVATE -include cstdint)
+target_compile_options(SvfCore PRIVATE -include cstdint)
+target_compile_options(SvfLLVM PRIVATE -include cstdint)
 
 find_package(Python3 REQUIRED)
 
@@ -85,6 +101,9 @@ set(AFLGO_COMPILER_PLUGIN_NAME AFLGoCompilerPlugin)
 set(AFLGO_LINKER_PLUGIN_NAME AFLGoLTOPlugin)
 
 add_subdirectory(passes)
+add_library(BeaconCliRuntime STATIC runtime/beacon_cli.c)
+target_include_directories(BeaconCliRuntime PRIVATE include)
+install(TARGETS BeaconCliRuntime ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 add_subdirectory(fuzzers)
 
 if(BUILD_TESTING)
