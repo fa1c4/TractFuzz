@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import os
 import re
 import shlex
 import shutil
@@ -20,6 +21,40 @@ FIXED = ROOT / "magma/work/idfuzz"
 
 def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def make_isolated_git_objects_self_contained(repo: Path) -> None:
+    """Copy alternate Git objects into the isolated workspace copy only."""
+    source_root = Path(os.environ["TRACTFUZZ_SOURCE_ROOT"]).resolve()
+    workspace = source_root / "workspace"
+    if not repo.resolve().is_relative_to(workspace):
+        raise RuntimeError("refusing to update Git objects outside workspace")
+    objects = repo / ".git/objects"
+    alternates = objects / "info/alternates"
+    if not alternates.is_file():
+        return
+    visited = {objects.resolve()}
+    sources = []
+    def collect(source: Path) -> None:
+        source = source.resolve()
+        if source in visited:
+            return
+        if not source.is_dir():
+            raise RuntimeError(f"missing Git alternate for {repo}: {source}")
+        visited.add(source)
+        nested = source / "info/alternates"
+        if nested.is_file():
+            for line in nested.read_text().splitlines():
+                if line.strip():
+                    collect(Path(line.strip()))
+        sources.append(source)
+    for line in alternates.read_text().splitlines():
+        if line.strip():
+            collect(Path(line.strip()))
+    for source in sources:
+        subprocess.run(["cp", "-a", "--reflink=auto", str(source) + "/.",
+                        str(objects)], check=True)
+    alternates.unlink(missing_ok=True)
 
 
 def fixed_rows() -> dict[str, tuple[str, str]]:
@@ -80,6 +115,8 @@ def main() -> None:
         isolated.mkdir(parents=True, exist_ok=True)
         subprocess.run(["cp", "-a", "--reflink=auto", str(repo), str(isolated_repo)], check=True)
         shutil.rmtree(isolated_repo / ".pbfuzz", ignore_errors=True)
+    if os.environ.get("TRACTFUZZ_EVAL_STAGED") == "1":
+        make_isolated_git_objects_self_contained(isolated_repo)
     isolated_bin.mkdir(exist_ok=True)
     isolated_binary = isolated_bin / binary.name
     isolated_monitor = isolated_bin / "monitor"

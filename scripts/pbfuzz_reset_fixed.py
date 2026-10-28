@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Archive a completed fixed-track attempt and prepare a fresh campaign."""
+"""Archive an existing fixed-track attempt and prepare a fresh campaign."""
 import argparse
 import json
 import subprocess
@@ -11,17 +11,21 @@ from pbfuzz_fixed_campaign import RESULTS, ROOT, fixed_rows
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("bug_id")
+    parser.add_argument("--allow-incomplete", action="store_true",
+                        help="archive a partially set up campaign without run.json")
     args = parser.parse_args()
     row = fixed_rows().get(args.bug_id)
     if row is None:
         parser.error("bug ID is outside the frozen 60")
     work = RESULTS / "fixed" / args.bug_id
-    if not (work / "run.json").is_file():
+    if not work.is_dir():
+        parser.error("fixed-track work directory is absent")
+    if not args.allow_incomplete and not (work / "run.json").is_file():
         parser.error("run.json absent; wait for the run to finish")
     project, _ = row
     repo = ROOT / "magma/work/idfuzz" / args.bug_id / "target/repo"
     status = repo / ".pbfuzz" / f"fixed-{args.bug_id.lower()}"
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     archive = RESULTS / "prior-attempts" / args.bug_id / stamp
     archive.mkdir(parents=True)
     if status.is_symlink():

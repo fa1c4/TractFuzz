@@ -52,7 +52,7 @@ ARCHIVE_SHA256 = {
 }
 METRIC_FIELDS = ("executions", "reach_count", "trigger_count", "halo_observed", "halo_reached", "halo_generated", "halo_inferences", "witness")
 FIELDS = ("number", "project", "bug", "entry", "status", "detail", "seconds", "mode", "extended_cg",
-          *METRIC_FIELDS, "trial")
+          *METRIC_FIELDS, "trial", "rng_seed")
 
 
 def rows():
@@ -206,7 +206,7 @@ def cli_executions(findings):
         return struct.unpack("<Q", stream.read(8))[0]
 
 
-def run(row, seconds, mode, trial, extended_cg=False):
+def run(row, seconds, mode, trial, extended_cg=False, rng_seed=None, build_only=False):
     bug, project, entry = row["bug"], row["project"], row["entry"]
     is_cli = entry in CLI
     extended_cg = is_cli or extended_cg
@@ -268,7 +268,7 @@ def run(row, seconds, mode, trial, extended_cg=False):
         "AFLGO_CLANG": "/usr/bin/clang-15", "AFLGO_SKIP_TARGETS_CHECK": "1",
         "AFLGO_HALO_EXTEND_CG": "1" if extended_cg else "0",
         "AFLGO_HALO_ENTRY": linked_entry,
-        "PAR_JOBS": "4", "AR": "/usr/bin/llvm-ar-15",
+        "PAR_JOBS": os.environ.get("TRACTFUZZ_PAR_JOBS", "4"), "AR": "/usr/bin/llvm-ar-15",
         "RANLIB": "/usr/bin/llvm-ranlib-15", "LD": "/usr/bin/ld",
         "LDFLAGS": f"-L{out} -g -Wl,--export-dynamic",
         "LIBS": ("-l:magma.o -lrt -lbrotlidec -lbz2" if project == "poppler" else
@@ -466,6 +466,8 @@ def run(row, seconds, mode, trial, extended_cg=False):
     if not directed_target_call and bug != "PDF020":
         return "instrumentation_failure", "no directed target call survived linking", time.monotonic() - started
     runtime_stamp.write_text(runtime_hash + "\n")
+    if build_only:
+        return "build_complete", str(binary), time.monotonic() - started
 
     corpus = target / "corpus" / entry
     seeds = sorted(path for path in corpus.rglob("*") if path.is_file()) if corpus.is_dir() else []
@@ -496,6 +498,9 @@ def run(row, seconds, mode, trial, extended_cg=False):
         command = ["/usr/bin/timeout", "--signal=INT", "--kill-after=5", str(seconds),
                    binary, "--input", corpus, "--output", findings,
                    "--logfile", out / f"fuzzer_{suffix}.log"]
+    if rng_seed is not None:
+        position = command.index("--") if is_cli else len(command)
+        command[position:position] = ["--halo-seed", str(rng_seed)]
     with (out / f"campaign_{suffix}_canaries.csv").open("w") as stream:
         with log.open("a") as errors:
             result = subprocess.run([monitor, "--dump", "row", "--fetch", "watch", *command],
@@ -624,10 +629,14 @@ def main():
     parser.add_argument("action", choices=("matrix", "run", "all", "replay"))
     parser.add_argument("bug", nargs="?")
     parser.add_argument("--seconds", type=int, default=60)
+    parser.add_argument("--rng-seed", type=int,
+                        help="fix the Halo fuzzer RNG seed (default: current time)")
     parser.add_argument("--mode", choices=("halo",), default="halo")
     parser.add_argument("--trial", default="", help="separate artifacts for a repeated run")
     parser.add_argument("--pending-only", action="store_true",
                         help="with all, skip completed rows from this trial")
+    parser.add_argument("--build-only", action="store_true",
+                        help="prepare one target binary and local source cache without fuzzing")
     parser.add_argument("--force", action="store_true",
                         help="rerun a completed fixed row after a method build change")
     parser.add_argument("--extended-cg", action="store_true",
@@ -641,6 +650,8 @@ def main():
     args = parser.parse_args()
     if args.seconds < 1:
         parser.error("--seconds must be positive")
+    if args.rng_seed is not None and not 0 <= args.rng_seed < 2**64:
+        parser.error("--rng-seed must fit an unsigned 64-bit integer")
     if args.trial and not re.fullmatch(r"[A-Za-z0-9_-]+", args.trial):
         parser.error("--trial must contain only letters, digits, underscore, or hyphen")
     inventory = rows()
@@ -693,12 +704,13 @@ def main():
                 continue
             try:
                 status, detail, duration = run(row, args.seconds, args.mode, args.trial,
-                                               args.extended_cg)
+                                               args.extended_cg, args.rng_seed, args.build_only)
             except Exception as error:
                 status, detail, duration = "setup_or_build_failure", str(error), 0
             update_status(dict(row, status=status, detail=detail,
                                seconds=round(duration, 2), mode=args.mode, trial=args.trial,
                                extended_cg=int(row["entry"] in CLI or args.extended_cg),
+                               rng_seed=args.rng_seed if args.rng_seed is not None else "",
                                **campaign_metrics(row["bug"], args.mode, args.trial)))
             print(f"{row['bug']}: {status}: {detail}", flush=True)
 

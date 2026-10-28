@@ -206,7 +206,7 @@ def cli_executions(findings):
         return struct.unpack("<Q", stream.read(8))[0]
 
 
-def run(row, seconds, mode, trial, extended_cg=False):
+def run(row, seconds, mode, trial, extended_cg=False, rng_seed=1337, build_only=False):
     bug, project, entry = row["bug"], row["project"], row["entry"]
     is_cli = entry in CLI
     extended_cg = is_cli or extended_cg
@@ -270,7 +270,7 @@ def run(row, seconds, mode, trial, extended_cg=False):
         "AFLGO_IDFUZZ_ENTRY": linked_entry,
         "AFLGO_IDFUZZ_MANIFEST": str(out / "idfuzz-dom.tsv"),
         "IDFUZZ_MODEL_SCRIPT": str(ROOT / "scripts/idfuzz_model.py"),
-        "PAR_JOBS": "4", "AR": "/usr/bin/llvm-ar-15",
+        "PAR_JOBS": os.environ.get("TRACTFUZZ_PAR_JOBS", "4"), "AR": "/usr/bin/llvm-ar-15",
         "RANLIB": "/usr/bin/llvm-ranlib-15", "LD": "/usr/bin/ld",
         "LDFLAGS": f"-L{out} -g -Wl,--export-dynamic",
         "LIBS": ("-l:magma.o -lrt -lbrotlidec -lbz2" if project == "poppler" else
@@ -473,6 +473,8 @@ def run(row, seconds, mode, trial, extended_cg=False):
     manifest = out / f"idfuzz-dom-{linked_entry}.tsv"
     if not manifest.is_file():
         return "analysis_failure", f"missing dominator manifest {manifest}", time.monotonic() - started
+    if build_only:
+        return "build_complete", str(binary), time.monotonic() - started
 
     corpus = target / "corpus" / entry
     seeds = sorted(path for path in corpus.rglob("*") if path.is_file()) if corpus.is_dir() else []
@@ -493,7 +495,7 @@ def run(row, seconds, mode, trial, extended_cg=False):
         seed_digest.update(str(seed.relative_to(corpus)).encode() + b"\0")
         seed_digest.update(seed.read_bytes())
     config = dict(schema=1, bug=bug, project=project, entry=entry, mode=mode,
-                  trial=trial, seconds=seconds, rng_seed=1337,
+                  trial=trial, seconds=seconds, rng_seed=rng_seed,
                   magma_revision=subprocess.check_output(
                       ["git", "-C", MAGMA_ROOT, "rev-parse", "HEAD"], text=True).strip(),
                   binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),
@@ -532,12 +534,12 @@ def run(row, seconds, mode, trial, extended_cg=False):
         command = ["/usr/bin/timeout", "--signal=INT", "--kill-after=5", str(seconds),
                    cli_runner, "--target", binary, "--input", corpus,
                    "--output", findings, "--logfile", fuzzer_log,
-                   "--idfuzz-seed", "1337",
+                   "--idfuzz-seed", str(rng_seed),
                    "--", *cli_args(entry, "@@", out)]
     else:
         command = ["/usr/bin/timeout", "--signal=INT", "--kill-after=5", str(seconds),
                    binary, "--input", corpus, "--output", findings,
-                   "--logfile", fuzzer_log, "--idfuzz-seed", "1337"]
+                   "--logfile", fuzzer_log, "--idfuzz-seed", str(rng_seed)]
     if mode == "control":
         command.insert(command.index("--logfile"), "--control")
     with (out / f"campaign_{suffix}_canaries.csv").open("w") as stream:
@@ -710,10 +712,14 @@ def main():
     parser.add_argument("action", choices=("matrix", "run", "all", "replay"))
     parser.add_argument("bug", nargs="?")
     parser.add_argument("--seconds", type=int, default=60)
+    parser.add_argument("--rng-seed", type=int, default=1337,
+                        help="RNG seed shared by IDFuzz and its paired control (default: 1337)")
     parser.add_argument("--mode", choices=("idfuzz", "control"), default="idfuzz")
     parser.add_argument("--trial", default="", help="separate artifacts for a repeated run")
     parser.add_argument("--pending-only", action="store_true",
                         help="with all, skip completed rows from this trial")
+    parser.add_argument("--build-only", action="store_true",
+                        help="prepare one target binary and local source cache without fuzzing")
     parser.add_argument("--force", action="store_true",
                         help="rerun a completed fixed row after a method build change")
     parser.add_argument("--extended-cg", action="store_true",
@@ -728,6 +734,8 @@ def main():
     STATUS = ROOT / "results" / "idfuzz" / f"status-{args.mode}.csv"
     if args.seconds < 1:
         parser.error("--seconds must be positive")
+    if not 0 <= args.rng_seed < 2**64:
+        parser.error("--rng-seed must fit an unsigned 64-bit integer")
     if args.trial and not re.fullmatch(r"[A-Za-z0-9_-]+", args.trial):
         parser.error("--trial must contain only letters, digits, underscore, or hyphen")
     inventory = rows()
@@ -780,7 +788,7 @@ def main():
                 continue
             try:
                 status, detail, duration = run(row, args.seconds, args.mode, args.trial,
-                                               args.extended_cg)
+                                               args.extended_cg, args.rng_seed, args.build_only)
             except Exception as error:
                 status, detail, duration = "setup_or_build_failure", str(error), 0
             update_status(dict(row, status=status, detail=detail,

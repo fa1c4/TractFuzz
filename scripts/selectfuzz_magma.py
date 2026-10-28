@@ -205,7 +205,7 @@ def cli_executions(findings):
         return struct.unpack("<Q", stream.read(8))[0]
 
 
-def run(row, seconds, mode, trial, extended_cg=False):
+def run(row, seconds, mode, trial, extended_cg=False, build_only=False):
     bug, project, entry = row["bug"], row["project"], row["entry"]
     is_cli = entry in CLI
     extended_cg = is_cli or extended_cg
@@ -268,7 +268,7 @@ def run(row, seconds, mode, trial, extended_cg=False):
         "AFLGO_SELECTFUZZ_MANIFEST": str(out / "selectfuzz-blocks.tsv"),
         "AFLGO_SELECTFUZZ_EXTEND_CG": "1" if extended_cg else "0",
         "AFLGO_SELECTFUZZ_ENTRY": linked_entry,
-        "PAR_JOBS": "4", "AR": "/usr/bin/llvm-ar-15",
+        "PAR_JOBS": os.environ.get("TRACTFUZZ_PAR_JOBS", "4"), "AR": "/usr/bin/llvm-ar-15",
         "RANLIB": "/usr/bin/llvm-ranlib-15", "LD": "/usr/bin/ld",
         "LDFLAGS": f"-L{out} -g -Wl,--export-dynamic",
         "LIBS": ("-l:magma.o -lrt -lbrotlidec -lbz2" if project == "poppler" else
@@ -474,6 +474,8 @@ def run(row, seconds, mode, trial, extended_cg=False):
     if not directed_target_call and bug != "PDF020":
         return "instrumentation_failure", "no directed target call survived linking", time.monotonic() - started
     runtime_stamp.write_text(runtime_hash + "\n")
+    if build_only:
+        return "build_complete", str(binary), time.monotonic() - started
 
     corpus = target / "corpus" / entry
     seeds = sorted(path for path in corpus.rglob("*") if path.is_file()) if corpus.is_dir() else []
@@ -632,6 +634,8 @@ def main():
     parser.add_argument("--trial", default="", help="separate artifacts for a repeated run")
     parser.add_argument("--pending-only", action="store_true",
                         help="with all, skip completed rows from this trial")
+    parser.add_argument("--build-only", action="store_true",
+                        help="prepare one target binary and local source cache without fuzzing")
     parser.add_argument("--force", action="store_true",
                         help="rerun a completed fixed row after a method build change")
     parser.add_argument("--extended-cg", action="store_true",
@@ -697,7 +701,7 @@ def main():
                 continue
             try:
                 status, detail, duration = run(row, args.seconds, args.mode, args.trial,
-                                               args.extended_cg)
+                                               args.extended_cg, args.build_only)
             except Exception as error:
                 status, detail, duration = "setup_or_build_failure", str(error), 0
             update_status(dict(row, status=status, detail=detail,

@@ -52,6 +52,8 @@ def main() -> None:
     }
     pbfuzz = entry("pbfuzz", "@pbfuzz/dsh-pbfuzz")
     config = pbfuzz.setdefault("config", {})
+    config.setdefault("execution", {})["pythonPath"] = str(
+        root / "results/pbfuzz/source/github/engine/.venv/bin/python")
     config["budget"] = {
         "maxPierRounds": int(os.environ.get("PBFUZZ_MAX_ROUNDS", "2")),
         "campaignWallTimeMin": int(os.environ.get("PBFUZZ_WALL_MIN", "10")),
@@ -59,6 +61,8 @@ def main() -> None:
         "maxConsecutiveForcedContinues": 3,
     }
     config["fuzzing"] = {"maxIters": int(os.environ.get("PBFUZZ_MAX_ITERS", "1000"))}
+    if os.environ.get("PBFUZZ_FUZZ_TIMEOUT_SEC"):
+        config["fuzzing"]["fuzzTimeoutSec"] = float(os.environ["PBFUZZ_FUZZ_TIMEOUT_SEC"])
     if os.environ.get("PBFUZZ_EXEC_TIMEOUT_SEC"):
         config["fuzzing"]["execTimeoutSec"] = float(os.environ["PBFUZZ_EXEC_TIMEOUT_SEC"])
     config["onboarding"] = {"interviewPolicy": "never"}

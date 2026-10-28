@@ -54,7 +54,9 @@ restore() {
 }
 trap restore EXIT
 patches="$root/magma/targets/$project/patches"
-[[ ! -d "$patches" ]] || mv "$patches" "$hidden/patches"
+if [[ "${PBFUZZ_SKIP_PATCH_HIDE:-0}" != 1 ]]; then
+    [[ ! -d "$patches" ]] || mv "$patches" "$hidden/patches"
+fi
 if [[ "$output" == "$root/results/pbfuzz/isolated/"* ]]; then
     mv "$original" "$hidden/bug"
 fi
@@ -73,6 +75,9 @@ allow=(
 for optional in "$HOME/.npm" "$HOME/.cache" "$HOME/.nvm" "$HOME/anaconda3"; do
     [[ ! -d "$optional" ]] || allow+=(--allow "$optional")
 done
+python_runtime="$(readlink -f "$root/results/pbfuzz/source/github/engine/.venv/bin/python")"
+python_runtime_root="$(dirname "$(dirname "$python_runtime")")"
+[[ ! -d "$python_runtime_root" ]] || allow+=(--allow "$python_runtime_root")
 
 started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 hard_wall="${PBFUZZ_HARD_WALL_SEC:-360}"
