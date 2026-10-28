@@ -18,5 +18,6 @@ exec docker run --rm --init --network host \
     --user "$(id -u):$(id -g)" \
     -v "$repo_root:$repo_root" -w "$repo_root" \
     -e HOME=/tmp -e USER="$(id -un)" -e TRACTFUZZ_PAR_JOBS=1 \
+    -e SVF_DIR="$repo_root/build/_deps/svf-src" \
     -e PYTHONDONTWRITEBYTECODE=1 \
     "$image" python3 scripts/idfuzz_magma.py "$@"

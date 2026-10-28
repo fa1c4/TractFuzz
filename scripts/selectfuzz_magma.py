@@ -122,21 +122,21 @@ def shallow_checkout(remote, revision, destination, env, log):
     destination.mkdir(parents=True, exist_ok=True)
     call(["git", "-C", destination, "init"], env, log)
     call(["git", "-C", destination, "remote", "add", "origin", remote], env, log)
-    try:
-        call(["git", "-C", destination, "-c", "http.version=HTTP/1.1",
-              "fetch", "--depth=1", "--filter=blob:none", "origin", revision], env, log)
-    except RuntimeError:
-        call(["git", "-C", destination, "-c", "http.version=HTTP/1.1",
-              "fetch", "--depth=1", "origin", revision], env, log)
-    for attempt in range(3):
+    last_error = None
+    for attempt in range(6):
+        # A filtered fetch may leave missing promisor blobs on unreliable links.
+        # Retry the full pinned revision and its checkout before giving up.
+        options = ["--filter=blob:none"] if attempt == 0 else []
         try:
+            call(["git", "-C", destination, "-c", "http.version=HTTP/1.1",
+                  "fetch", "--depth=1", *options, "origin", revision], env, log)
             call(["git", "-C", destination, "checkout", "--detach", "FETCH_HEAD"], env, log)
             return
-        except RuntimeError:
-            time.sleep(attempt + 1)
-    call(["git", "-C", destination, "-c", "http.version=HTTP/1.1",
-          "fetch", "--depth=1", "origin", revision], env, log)
-    call(["git", "-C", destination, "checkout", "--detach", "FETCH_HEAD"], env, log)
+        except RuntimeError as error:
+            last_error = error
+            if attempt < 5:
+                time.sleep(min(2 ** attempt, 16))
+    raise last_error
 
 
 def github_archive_checkout(remote, revision, destination, env, log):
@@ -310,6 +310,11 @@ def run(row, seconds, mode, trial, extended_cg=False, build_only=False):
                 if tagged.returncode == 0:
                     cache = candidate
                     break
+        preferred = MAGMA_ROOT / "source-cache" / project / "target/repo"
+        if (preferred / ".git").is_dir() and subprocess.run(
+            ["git", "-C", preferred, "rev-parse", "--verify", "magma-init"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+            cache = preferred
         if cache is not None:
             revision = subprocess.check_output(
                 ["git", "-C", cache, "rev-parse", "magma-init"], text=True
@@ -358,7 +363,14 @@ def run(row, seconds, mode, trial, extended_cg=False, build_only=False):
                                  "50d0033f7ee600c5f5831b28877353769d1f7d48",
                                  target / "freetype2", env, log)
         else:
-            call(["bash", target_source / "fetch.sh"], env, log)
+            for attempt in range(5):
+                try:
+                    call(["bash", target_source / "fetch.sh"], env, log)
+                    break
+                except RuntimeError:
+                    if attempt == 4:
+                        raise
+                    time.sleep(min(2 ** attempt, 16))
     if project == "php":
         oniguruma = repo / "oniguruma"
         if not (oniguruma / ".git").is_dir():
@@ -375,6 +387,11 @@ def run(row, seconds, mode, trial, extended_cg=False, build_only=False):
             shallow_checkout("https://gitlab.freedesktop.org/freetype/freetype.git",
                              "50d0033f7ee600c5f5831b28877353769d1f7d48",
                              freetype, env, log)
+        preferred = MAGMA_ROOT / "source-cache/poppler/target/freetype2"
+        if (not (freetype / "subprojects/dlg/include/dlg/dlg.h").is_file() and
+                (preferred / "subprojects/dlg/include/dlg/dlg.h").is_file()):
+            shutil.rmtree(freetype)
+            shutil.copytree(preferred, freetype, symlinks=True)
         if not (freetype / "subprojects/dlg/include/dlg/dlg.h").is_file():
             for other in rows():
                 candidate = WORK_ROOT / other["bug"] / "target/freetype2"

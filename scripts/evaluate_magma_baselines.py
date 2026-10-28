@@ -160,19 +160,65 @@ def stage_frozen_pbfuzz_inputs(source_root: Path, destination: Path,
         for asset in (binary, source / "out/monitor", source / "out/aflgo_targets.txt"):
             copy_asset(asset, output / asset.name)
         targets = output / "aflgo_targets.txt"
-        targets.write_text(targets.read_text().replace(str(source_root), str(destination)))
+        targets.write_text(targets.read_text().replace(
+            str(source_root / "magma/work/idfuzz"),
+            str(destination / "magma/work/idfuzz")))
         shutil.rmtree(target / "target/repo/.pbfuzz", ignore_errors=True)
 
 
 def stage_evaluation(source_root: Path, destination: Path, arms: list[str],
                      rows: list[tuple[str, str, str]]) -> None:
     destination.mkdir(parents=True, exist_ok=True)
+    active_lock = destination / "results/baselines/.evaluation.lock"
+    if active_lock.is_file():
+        with active_lock.open("r") as stream:
+            try:
+                fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise RuntimeError(f"evaluation is already running: {destination}") from error
     (destination / "tmp").mkdir(exist_ok=True)
     (destination / "home").mkdir(exist_ok=True)
     for relative in ("scripts", "fuzzers", "docs/tractfuzz_magma_benchmarks.md",
                      "build/install", "magma/.git", "magma/targets", "magma/magma",
                      "magma/fuzzers"):
         copy_asset(source_root / relative, destination / relative)
+    # Resume with the repaired runners while retaining all staged builds and logs.
+    shutil.copytree(source_root / "scripts", destination / "scripts",
+                    dirs_exist_ok=True, symlinks=True)
+    if any(arm != "pbfuzz" for arm in arms):
+        svf_json = Path("build/_deps/svf-src/svf/include/Util/ExtAPI.json")
+        copy_asset(source_root / svf_json, destination / svf_json)
+        source_cache = destination / "magma/source-cache"
+        for project in dict.fromkeys(project for _, project, _ in rows):
+            target = source_cache / project / "target"
+            if (target / "repo/.git").is_dir():
+                continue
+            for bug, row_project, _ in rows:
+                if row_project != project:
+                    continue
+                candidate = source_root / "magma/work/beacon" / bug / "target/repo"
+                if not (candidate / ".git").is_dir() or (
+                    candidate / ".git/objects/info/alternates").exists():
+                    continue
+                if project == "php" and not (candidate / "oniguruma/.git").is_dir():
+                    continue
+                if project == "poppler" and not (
+                    candidate.parent / "freetype2/subprojects/dlg/include/dlg/dlg.h").is_file():
+                    continue
+                tagged = subprocess.run(["git", "-C", str(candidate), "rev-parse",
+                                         "--verify", "magma-init"],
+                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if tagged.returncode:
+                    continue
+                copy_asset(candidate / ".git", target / "repo/.git")
+                if project == "php":
+                    copy_asset(candidate / "oniguruma/.git",
+                               target / "repo/oniguruma/.git")
+                if project == "poppler":
+                    freetype = candidate.parent / "freetype2"
+                    if (freetype / "subprojects/dlg/include/dlg/dlg.h").is_file():
+                        copy_asset(freetype, target / "freetype2")
+                break
     for name in ("beacon_cli", "selectfuzz_cli", "halo_cli", "idfuzz_cli"):
         asset = source_root / "target/release" / name
         if asset.is_file():
@@ -184,7 +230,8 @@ def stage_evaluation(source_root: Path, destination: Path, arms: list[str],
     for wrapper in (destination / "build/install/bin").glob("libaflgo_*"):
         if wrapper.is_file() and wrapper.read_bytes().startswith(b"#!/usr/bin/env python"):
             content = wrapper.read_text()
-            rebased = content.replace(str(source_root), str(destination))
+            rebased = content.replace(str(source_root / "build/install"),
+                                      str(destination / "build/install"))
             if rebased != content:
                 wrapper.write_text(rebased)
     if "pbfuzz" in arms:
@@ -197,7 +244,8 @@ def stage_evaluation(source_root: Path, destination: Path, arms: list[str],
             path = profile / name
             if path.is_file():
                 content = path.read_text()
-                rebased = content.replace(str(source_root), str(destination))
+                rebased = content.replace(str(source_root / "results/pbfuzz"),
+                                          str(destination / "results/pbfuzz"))
                 if rebased != content:
                     path.write_text(rebased)
         if "idfuzz" not in arms:

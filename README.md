@@ -123,7 +123,7 @@ python3 scripts/evaluate_magma_baselines.py --trials 3 --fuzz-time 24h --paralle
 
 `--trials` defaults to `1`; `--fuzz-time` defaults to `24h` and accepts `s`, `m`, `h`, or `d` (a bare number means seconds). The time is **per bug and per arm**. `--parallel-worker` defaults to `64` and uses at most that many logical CPUs from the caller's affinity mask. Each active campaign gets one distinct CPU: Docker uses `--cpuset-cpus`, and PBFuzz host processes inherit CPU affinity. The six arms schedule 360 target-days of campaigns per trial, excluding build and analysis time. PBFuzz gets the requested fuzz-stage cap plus up to one hour for agent planning and teardown; it can stop earlier, and its wall time is not a pure fuzzer-execution budget.
 
-Before each LibAFLGo arm, the evaluator builds one target per Magma project to establish a local source cache; these nine warmups do not fuzz. It then runs the 60 bug campaigns in parallel. The arms run in the table order so IDFuzz's frozen binaries are ready for PBFuzz.
+Before each LibAFLGo arm, the evaluator builds one target per Magma project; these nine warmups do not fuzz. It stages SVF's `ExtAPI.json` for linker analysis and, when earlier local Magma target checkouts exist, copies their Git object stores into an evaluation-local source cache. Without a local cache, source fetches use bounded retries. The 60 bug campaigns then run in parallel. Rerunning the same command after an interrupted warmup refreshes the staged scripts and retries failed rows while keeping completed builds. The arms run in the table order so IDFuzz's frozen binaries are ready for PBFuzz.
 
 Run one or more arms by selecting them:
 
