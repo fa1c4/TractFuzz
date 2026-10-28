@@ -125,6 +125,8 @@ python3 scripts/evaluate_magma_baselines.py --trials 3 --fuzz-time 24h --paralle
 
 Before each LibAFLGo arm, the evaluator builds one target per Magma project; these nine warmups do not fuzz. It stages SVF's `ExtAPI.json` for linker analysis and, when earlier local Magma target checkouts exist, copies their Git object stores into an evaluation-local source cache. Without a local cache, source fetches use bounded retries. The 60 bug campaigns then run in parallel. Rerunning the same command after an interrupted warmup refreshes the staged scripts and retries failed rows while keeping completed builds. The arms run in the table order so IDFuzz's frozen binaries are ready for PBFuzz.
 
+Pressing Ctrl+C stops scheduling new bugs, terminates active host process trees, and stops and removes Docker containers labeled for that evaluation. Once a campaign has started, its manifest is marked `interrupted`; rerun the same command and evaluation name to resume completed rows.
+
 Run one or more arms by selecting them:
 
 ```sh

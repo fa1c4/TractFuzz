@@ -14,8 +14,11 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
+import threading
+import time
 import uuid
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -45,6 +48,130 @@ STATUS = {
     "idfuzz": ROOT / "results/idfuzz/status-idfuzz.csv",
     "aflgo": ROOT / "results/idfuzz/status-control.csv",
 }
+STOP_REQUESTED = threading.Event()
+LAUNCH_LOCK = threading.Lock()
+ACTIVE_PROCESSES: dict[int, subprocess.Popen] = {}
+
+
+def _signal_interrupt(signum: int, _frame: object) -> None:
+    STOP_REQUESTED.set()
+    raise KeyboardInterrupt(f"received signal {signum}")
+
+
+def _descendants(roots: set[int]) -> set[int]:
+    children: dict[int, list[int]] = {}
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            stat = (entry / "stat").read_text()
+            fields = stat.rsplit(")", 1)[1].split()
+            parent = int(fields[1])
+        except (OSError, ValueError, IndexError):
+            continue
+        children.setdefault(parent, []).append(int(entry.name))
+    found = set(roots)
+    pending = list(roots)
+    while pending:
+        for child in children.get(pending.pop(), ()):
+            if child not in found:
+                found.add(child)
+                pending.append(child)
+    return found - roots
+
+
+def cleanup_docker() -> bool:
+    name = os.environ.get("TRACTFUZZ_EVAL_NAME", "")
+    if not name or not shutil.which("docker"):
+        return True
+    deadline = time.monotonic() + 45
+    empty_checks = 0
+    last_error = ""
+    while time.monotonic() < deadline:
+        try:
+            listing = subprocess.run(
+                ["docker", "ps", "-aq", "--filter", f"label=tractfuzz.evaluation={name}"],
+                capture_output=True, text=True, timeout=10, check=True)
+            container_ids = listing.stdout.split()
+            if not container_ids:
+                # A docker run request may still be completing after its client exits.
+                empty_checks += 1
+                if empty_checks >= 3:
+                    return True
+            else:
+                empty_checks = 0
+                last_error = f"containers still present: {', '.join(container_ids)}"
+                removed = subprocess.run(["docker", "rm", "-f", *container_ids],
+                                         capture_output=True, text=True, timeout=15)
+                if removed.returncode:
+                    last_error = removed.stderr.strip()
+        except (OSError, subprocess.SubprocessError) as error:
+            last_error = str(error)
+        time.sleep(1)
+    print(f"Docker cleanup could not verify removal for evaluation {name}: {last_error}",
+          file=sys.stderr)
+    return False
+
+
+def stop_all_processes() -> bool:
+    STOP_REQUESTED.set()
+    if threading.current_thread() is threading.main_thread():
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    with LAUNCH_LOCK:
+        processes = list(ACTIVE_PROCESSES.values())
+    roots = {process.pid for process in processes}
+    # Also catch a child created while the main thread was inside Popen,
+    # before it could be entered in ACTIVE_PROCESSES.
+    descendants = _descendants(roots | {os.getpid()})
+    for process in processes:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except OSError:
+            pass
+    for pid in descendants:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    deadline = time.monotonic() + 3
+    for process in processes:
+        try:
+            process.wait(timeout=max(0.01, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            pass
+    for process in processes:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except OSError:
+            pass
+    for pid in descendants:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    return cleanup_docker()
+
+
+def run_parallel(items: list[str], worker_count: int, worker, on_result) -> None:
+    pool = ThreadPoolExecutor(max_workers=worker_count)
+    futures = []
+    try:
+        for item in items:
+            if STOP_REQUESTED.is_set():
+                raise KeyboardInterrupt("evaluation interrupted while scheduling campaigns")
+            futures.append(pool.submit(worker, item))
+        for future in as_completed(futures):
+            on_result(future.result())
+    except BaseException:
+        stop_all_processes()
+        for future in futures:
+            future.cancel()
+        raise
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
+        if STOP_REQUESTED.is_set():
+            cleanup_docker()
 
 
 def now() -> str:
@@ -121,10 +248,45 @@ def run_logged(command: list[str], log: Path, env: dict | None = None,
         environment = dict(os.environ if env is None else env)
         if core is not None:
             environment["TRACTFUZZ_CPUSET"] = str(core)
+        if environment.get("TRACTFUZZ_EVAL_NAME"):
+            environment["TRACTFUZZ_DOCKER_NAME"] = (
+                f"tractfuzz-{environment['TRACTFUZZ_EVAL_NAME']}-{uuid.uuid4().hex[:12]}")
         actual = ["taskset", "-c", str(core), *command] if core is not None else command
-        return subprocess.run(actual, cwd=ROOT, env=environment,
-                              stdout=stream,
-                              stderr=subprocess.STDOUT, check=False).returncode
+        with LAUNCH_LOCK:
+            if STOP_REQUESTED.is_set():
+                raise RuntimeError("evaluation interrupted before starting another campaign")
+            process = subprocess.Popen(actual, cwd=ROOT, env=environment,
+                                       stdout=stream, stderr=subprocess.STDOUT,
+                                       start_new_session=True)
+            ACTIVE_PROCESSES[process.pid] = process
+        try:
+            code = process.wait()
+        except BaseException:
+            # The shutdown path still needs this process group in the registry.
+            raise
+        else:
+            with LAUNCH_LOCK:
+                ACTIVE_PROCESSES.pop(process.pid, None)
+            return code
+
+
+def run_capture(command: list[str], log: Path) -> subprocess.CompletedProcess:
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with log.open("a") as errors:
+        with LAUNCH_LOCK:
+            if STOP_REQUESTED.is_set():
+                raise RuntimeError("evaluation interrupted before starting another subprocess")
+            process = subprocess.Popen(command, cwd=ROOT, stdout=subprocess.PIPE,
+                                       stderr=errors, text=True, start_new_session=True)
+            ACTIVE_PROCESSES[process.pid] = process
+        try:
+            output, _ = process.communicate()
+        except BaseException:
+            raise
+        else:
+            with LAUNCH_LOCK:
+                ACTIVE_PROCESSES.pop(process.pid, None)
+            return subprocess.CompletedProcess(command, process.returncode, output)
 
 
 def copy_asset(source: Path, destination: Path) -> None:
@@ -264,6 +426,7 @@ def enter_evaluation(source_root: Path, destination: Path) -> None:
     key_script = Path(os.environ.get("PBFUZZ_KEY_SCRIPT",
                              str(Path.home() / "api_keys/set_api_key.sh"))).expanduser().resolve()
     environment.update(TRACTFUZZ_EVAL_STAGED="1", TRACTFUZZ_SOURCE_ROOT=str(source_root),
+                       TRACTFUZZ_EVAL_NAME=destination.name,
                        TRACTFUZZ_PAR_JOBS="1", PYTHONDONTWRITEBYTECODE="1",
                        PBFUZZ_SKIP_PATCH_HIDE="1",
                        PBFUZZ_KEY_SCRIPT=str(key_script))
@@ -401,12 +564,12 @@ def warm_project_sources(arm: str, trial: str, seconds: int, seed: int,
         finally:
             slots.put(core)
     failures = []
-    with ThreadPoolExecutor(max_workers=min(len(cores), len(first_by_project))) as pool:
-        futures = [pool.submit(prepare, bug) for bug in first_by_project.values()]
-        for future in as_completed(futures):
-            bug, state = future.result()
-            if state != "complete":
-                failures.append(bug)
+    def record_result(result: tuple[str, str]) -> None:
+        bug, state = result
+        if state != "complete":
+            failures.append(bug)
+    run_parallel(list(first_by_project.values()),
+                 min(len(cores), len(first_by_project)), prepare, record_result)
     if failures:
         raise RuntimeError(f"{arm} project warmup failed for {sorted(failures)}; see {warmup}")
 
@@ -447,12 +610,11 @@ def run_container_arm(arm: str, trial: str, seconds: int, seed: int,
         finally:
             slots.put(core)
     failures = []
-    with ThreadPoolExecutor(max_workers=len(cores)) as pool:
-        futures = [pool.submit(run_bug, bug) for bug, _, _ in rows]
-        for future in as_completed(futures):
-            bug, code = future.result()
-            if code:
-                failures.append(f"{bug}: exit {code}")
+    def record_result(result: tuple[str, int]) -> None:
+        bug, code = result
+        if code:
+            failures.append(f"{bug}: exit {code}")
+    run_parallel([bug for bug, _, _ in rows], len(cores), run_bug, record_result)
     record.update(finished_at=now(), failed_bugs=failures)
     if not failures:
         try:
@@ -480,9 +642,7 @@ def archive_current_pbfuzz(bug: str, registry_path: Path) -> None:
             fcntl.flock(run_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
             raise RuntimeError(f"PBFuzz {bug} is already running") from error
-        with log.open("a") as stream:
-            process = subprocess.run(command, cwd=ROOT, stdout=subprocess.PIPE,
-                                     stderr=stream, text=True, check=False)
+        process = run_capture(command, log)
     if process.returncode != 0:
         raise RuntimeError(f"PBFuzz could not archive {bug}; see {log}")
     try:
@@ -602,14 +762,13 @@ def run_pbfuzz_arm(trial: str, seconds: int, rows: list[tuple[str, str, str]],
         }
         atomic_json(bugs_dir / f"{bug}.json", record)
         return record
-    with ThreadPoolExecutor(max_workers=len(cores)) as pool:
-        futures = [pool.submit(run_bug, bug) for bug, _, _ in rows]
-        for future in as_completed(futures):
-            bug, record = future.result()
-            if record is not None:
-                registry = read_json(registry_path)
-                registry[bug] = {"trial": trial, "record_path": str(bugs_dir / f"{bug}.json")}
-                atomic_json(registry_path, registry)
+    def record_result(result: tuple[str, dict | None]) -> None:
+        bug, record = result
+        if record is not None:
+            registry = read_json(registry_path)
+            registry[bug] = {"trial": trial, "record_path": str(bugs_dir / f"{bug}.json")}
+            atomic_json(registry_path, registry)
+    run_parallel([bug for bug, _, _ in rows], len(cores), run_bug, record_result)
     matrix = directory / "trial-60.csv"
     fields = ("trial", "bug_id", "project", "fixed_entry", "phase", "run_exit_code",
               "seconds_per_target", "replay_trigger_trials", "replay_timeouts",
@@ -797,8 +956,28 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    signal.signal(signal.SIGINT, _signal_interrupt)
+    signal.signal(signal.SIGTERM, _signal_interrupt)
     try:
         main()
+    except KeyboardInterrupt:
+        cleaned = stop_all_processes()
+        name = os.environ.get("TRACTFUZZ_EVAL_NAME", "")
+        if name:
+            manifest_path = RESULTS / "evaluations" / name / "manifest.json"
+            manifest = read_json(manifest_path)
+            if manifest and manifest.get("state") != "complete":
+                atomic_json(manifest_path, dict(manifest, state="interrupted",
+                                                interrupted_at=now()))
+        if cleaned:
+            print("evaluation interrupted; campaign processes and Docker containers stopped",
+                  file=sys.stderr)
+        else:
+            print("evaluation interrupted; Docker removal could not be verified",
+                  file=sys.stderr)
+        raise SystemExit(130)
     except (RuntimeError, OSError, subprocess.CalledProcessError) as error:
+        if os.environ.get("TRACTFUZZ_EVAL_STAGED") == "1":
+            stop_all_processes()
         print(f"evaluation error: {error}", file=sys.stderr)
         raise SystemExit(1)

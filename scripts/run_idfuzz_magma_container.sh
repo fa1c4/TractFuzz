@@ -7,6 +7,11 @@ cpuset=()
 if [[ -n "${TRACTFUZZ_CPUSET:-}" ]]; then cpuset=(--cpuset-cpus "$TRACTFUZZ_CPUSET"); fi
 eval_fs=()
 if [[ "${TRACTFUZZ_EVAL_STAGED:-0}" == 1 ]]; then eval_fs=(--read-only --tmpfs /tmp:rw,exec,nosuid,nodev); fi
+eval_identity=()
+if [[ -n "${TRACTFUZZ_EVAL_NAME:-}" ]]; then
+    eval_identity=(--label "tractfuzz.evaluation=$TRACTFUZZ_EVAL_NAME")
+    if [[ -n "${TRACTFUZZ_DOCKER_NAME:-}" ]]; then eval_identity+=(--name "$TRACTFUZZ_DOCKER_NAME"); fi
+fi
 if ! docker image inspect "$image" >/dev/null 2>&1; then
     if [[ "${TRACTFUZZ_EVAL_STAGED:-0}" == 1 ]]; then echo "Missing prebuilt image: $image" >&2; exit 1; fi
     docker build -f "$repo_root/scripts/idfuzz-magma.Dockerfile" \
@@ -15,6 +20,7 @@ fi
 exec docker run --rm --init --network host \
     "${cpuset[@]}" \
     "${eval_fs[@]}" \
+    "${eval_identity[@]}" \
     --user "$(id -u):$(id -g)" \
     -v "$repo_root:$repo_root" -w "$repo_root" \
     -e HOME=/tmp -e USER="$(id -un)" -e TRACTFUZZ_PAR_JOBS=1 \
