@@ -427,6 +427,7 @@ def enter_evaluation(source_root: Path, destination: Path) -> None:
                              str(Path.home() / "api_keys/set_api_key.sh"))).expanduser().resolve()
     environment.update(TRACTFUZZ_EVAL_STAGED="1", TRACTFUZZ_SOURCE_ROOT=str(source_root),
                        TRACTFUZZ_EVAL_NAME=destination.name,
+                       TRACTFUZZ_STOP_ON_TRIGGER="1",
                        TRACTFUZZ_PAR_JOBS="1", PYTHONDONTWRITEBYTECODE="1",
                        PBFUZZ_SKIP_PATCH_HIDE="1",
                        PBFUZZ_KEY_SCRIPT=str(key_script))
@@ -527,6 +528,8 @@ def snapshot_status(arm: str, trial: str, rows: list[tuple[str, str, str]],
     return {"rows": len(matching), "statuses": dict(sorted(counts.items())),
             "reached_rows": sum(positive(row, "reach_count") for row in matching.values()),
             "triggered_rows": sum(positive(row, "trigger_count") for row in matching.values()),
+            "early_stopped_rows": sum(row.get("stop_reason") == "trigger"
+                                      for row in matching.values()),
             "witness_rows": sum(bool(row.get("witness")) for row in matching.values()),
             "snapshot": snapshot}
 
@@ -718,6 +721,10 @@ def run_pbfuzz_arm(trial: str, seconds: int, rows: list[tuple[str, str, str]],
         work = ROOT / "results/pbfuzz/fixed" / bug
         run = read_json(work / "run.json")
         manifest = read_json(work / "manifest.json")
+        output_dir = manifest.get("output_dir")
+        engine_metrics = read_json(Path(output_dir) / "state/metrics.json") if output_dir else {}
+        session = engine_metrics.get("last_session")
+        session = session if isinstance(session, dict) else {}
         phase = run.get("phase", "setup_failure")
         replay = {}
         scan = {}
@@ -748,6 +755,8 @@ def run_pbfuzz_arm(trial: str, seconds: int, rows: list[tuple[str, str, str]],
             "phase": phase, "seconds_per_target": seconds,
             "pbfuzz_campaign_wall_minutes": wall_minutes,
             "hard_wall_seconds": hard_wall,
+            "fuzz_elapsed_seconds": session.get("elapsed_sec", ""),
+            "stop_reason": session.get("stopped_by", ""),
             "replay_trigger_trials": sum(item.get("monitor_triggered", 0) > 0 for item in trials),
             "replay_timeouts": sum(bool(item.get("timeout")) for item in trials),
             "replay_binary_hash_match": binary_hash_match,
@@ -771,7 +780,8 @@ def run_pbfuzz_arm(trial: str, seconds: int, rows: list[tuple[str, str, str]],
     run_parallel([bug for bug, _, _ in rows], len(cores), run_bug, record_result)
     matrix = directory / "trial-60.csv"
     fields = ("trial", "bug_id", "project", "fixed_entry", "phase", "run_exit_code",
-              "seconds_per_target", "replay_trigger_trials", "replay_timeouts",
+              "seconds_per_target", "fuzz_elapsed_seconds", "stop_reason",
+              "replay_trigger_trials", "replay_timeouts",
               "replay_binary_hash_match", "generated_candidates_scanned",
               "generated_reached", "generated_trigger_trials", "generated_binary_hash_match",
               "record_path")
@@ -809,6 +819,8 @@ def run_pbfuzz_arm(trial: str, seconds: int, rows: list[tuple[str, str, str]],
         "schema": 1, "arm": "pbfuzz", "trial": trial, "state": "complete",
         "rows": len(records), "seconds_per_target": seconds,
         "engine_success_rows": sum(record.get("phase") == "SUCCESS" for record in records),
+        "early_stopped_rows": sum(record.get("stop_reason") == "trigger"
+                                  for record in records),
         "verified_3_of_3": sum((record.get("replay_trigger_trials") == 3
                                 and record.get("replay_binary_hash_match")) or
                                (record.get("generated_trigger_trials") == 3
@@ -831,7 +843,7 @@ def run_pbfuzz_arm(trial: str, seconds: int, rows: list[tuple[str, str, str]],
 def write_summary(directory: Path, run_id: str, trials: int, arms: list[str]) -> None:
     output = directory / "summary.csv"
     fields = ("trial", "arm", "rows", "campaign_complete", "reached_rows",
-              "triggered_rows", "witness_rows", "engine_success_rows", "verified_3_of_3",
+              "triggered_rows", "early_stopped_rows", "witness_rows", "engine_success_rows", "verified_3_of_3",
               "generated_verified_3_of_3")
     with output.open("w", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=fields)
@@ -845,6 +857,7 @@ def write_summary(directory: Path, run_id: str, trials: int, arms: list[str]) ->
                     "campaign_complete": step.get("statuses", {}).get("campaign_complete", ""),
                     "reached_rows": step.get("reached_rows", ""),
                     "triggered_rows": step.get("triggered_rows", ""),
+                    "early_stopped_rows": step.get("early_stopped_rows", ""),
                     "witness_rows": step.get("witness_rows", ""),
                     "engine_success_rows": step.get("engine_success_rows", ""),
                     "verified_3_of_3": step.get("verified_3_of_3", ""),
@@ -893,7 +906,8 @@ def main() -> None:
     if args.dry_run:
         print(f"eval_root={eval_root} targets=60 trials={args.trials} fuzz_seconds={seconds} arms={','.join(arms)}")
         print(f"parallel_workers={len(cores)} requested={args.parallel_worker} cores={cores}")
-        print(f"campaign budget={seconds * 60 * len(arms) * args.trials} CPU seconds plus setup and analysis")
+        print("stop_on_target_trigger=yes; 24h is a per-campaign timeout")
+        print(f"campaign budget if every row times out={seconds * 60 * len(arms) * args.trials} summed campaign wall seconds plus setup and analysis")
         for index in range(1, args.trials + 1):
             trial = trial_name(run_id, index)
             for arm in arms:
@@ -927,6 +941,7 @@ def main() -> None:
             "schema": 1, "run_id": run_id, "trials": args.trials,
             "seconds_per_target": seconds, "arms": arms,
             "parallel_workers": len(cores), "cpu_set": cores,
+            "stop_on_target_trigger": True,
             "benchmark_sha256": hashlib.sha256(BENCHMARK.read_bytes()).hexdigest(),
             "magma_commit": subprocess.check_output(
                 ["git", "-C", str(ROOT / "magma"), "rev-parse", "HEAD"], text=True).strip(),

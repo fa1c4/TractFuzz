@@ -10,7 +10,7 @@ use std::{
 };
 
 use clap::Parser;
-use libafl::prelude::{Named, Observer};
+use libafl::prelude::{ondisk::OnDiskMetadataFormat, Named, Observer};
 use libafl::{
     bolts::{current_nanos, current_time, rands::StdRand, tuples::tuple_list},
     corpus::{Corpus, InMemoryOnDiskCorpus, OnDiskCorpus},
@@ -35,12 +35,24 @@ use libaflgo::{CoolingSchedule, DistanceFeedback, DistanceObserver, DistancePowe
 use serde::{Deserialize, Serialize};
 
 static SHARED_PTR: AtomicUsize = AtomicUsize::new(0);
+static REPORT_PTR: AtomicUsize = AtomicUsize::new(0);
+const EXECUTIONS_OFFSET: usize = MAP_SIZE + 16 + TARGETS_SIZE;
+
+fn persist_executions(ptr: *const u8) {
+    let count = unsafe { (ptr.add(EXECUTIONS_OFFSET) as *const u64).read_volatile() };
+    let report = REPORT_PTR.load(Ordering::Relaxed) as *mut u64;
+    if !report.is_null() {
+        unsafe { report.write_volatile(count); }
+    }
+}
 
 fn snapshot() -> (bool, Option<f64>, Vec<u8>) {
     let ptr = SHARED_PTR.load(Ordering::Relaxed) as *const u8;
     if ptr.is_null() {
         return (false, None, vec![]);
     }
+    // Mirror only the counter page; the large coverage map stays in tmpfs.
+    persist_executions(ptr);
     let targets = unsafe { std::slice::from_raw_parts(ptr.add(MAP_SIZE + 16), TARGETS_SIZE) };
     let reached = targets.iter().any(|&v| v != 0);
     let sum = unsafe { (ptr.add(MAP_SIZE) as *const u64).read_volatile() };
@@ -80,10 +92,33 @@ struct Args {
 struct SharedState {
     _file: File,
     ptr: *mut u8,
+    _report_file: File,
+    report_map: *mut u8,
+    report_len: usize,
 }
 
 impl SharedState {
-    fn new(path: &PathBuf) -> Result<Self, Error> {
+    fn new(path: &PathBuf, report_path: &PathBuf) -> Result<Self, Error> {
+        // The report is sparse: only its execution-counter page is mapped.
+        let report = OpenOptions::new().read(true).write(true).create(true).truncate(true)
+            .open(report_path)?;
+        report.set_len(SHARED_SIZE as u64)?;
+        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        if page_size <= 0 {
+            return Err(Error::illegal_state("cannot determine page size"));
+        }
+        let report_len = page_size as usize;
+        let report_offset = EXECUTIONS_OFFSET / report_len * report_len;
+        let report_map = unsafe {
+            libc::mmap(std::ptr::null_mut(), report_len,
+                libc::PROT_READ | libc::PROT_WRITE, libc::MAP_SHARED,
+                report.as_raw_fd(), report_offset as libc::off_t)
+        };
+        if report_map == libc::MAP_FAILED {
+            return Err(Error::illegal_state("cannot map CLI execution report"));
+        }
+        REPORT_PTR.store(unsafe { (report_map as *mut u8).add(EXECUTIONS_OFFSET - report_offset) }
+            as usize, Ordering::Relaxed);
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -102,18 +137,41 @@ impl SharedState {
             )
         };
         if ptr == libc::MAP_FAILED {
+            unsafe { libc::munmap(report_map, report_len) };
+            REPORT_PTR.store(0, Ordering::Relaxed);
             return Err(Error::illegal_state("cannot map CLI observation state"));
         }
         Ok(Self {
             _file: file,
             ptr: ptr.cast(),
+            _report_file: report,
+            report_map: report_map.cast(),
+            report_len,
         })
     }
+}
+
+struct ScratchDir(PathBuf);
+
+impl ScratchDir {
+    fn new() -> Result<Self, Error> {
+        let path = std::env::temp_dir().join(format!(
+            "idfuzz-cli-{}-{}", std::process::id(), current_nanos()
+        ));
+        fs::create_dir(&path)?;
+        Ok(Self(path))
+    }
+}
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
 }
 
 impl Drop for SharedState {
     fn drop(&mut self) {
         unsafe { libc::munmap(self.ptr.cast(), SHARED_SIZE) };
+        REPORT_PTR.store(0, Ordering::Relaxed);
+        unsafe { libc::munmap(self.report_map.cast(), self.report_len) };
     }
 }
 
@@ -181,8 +239,9 @@ fn run(args: Args) -> Result<(), Error> {
     fs::create_dir_all(&args.output)?;
     let target = args.target.canonicalize()?;
     let output = args.output.canonicalize()?;
-    let shared_path = output.join(".idfuzz_cli_state");
-    let shared = SharedState::new(&shared_path)?;
+    let scratch = ScratchDir::new()?;
+    let shared_path = scratch.0.join(".idfuzz_cli_state");
+    let shared = SharedState::new(&shared_path, &output.join(".idfuzz_cli_state"))?;
     SHARED_PTR.store(shared.ptr as usize, Ordering::Relaxed);
     let idfuzz: Shared = Arc::new(Mutex::new(Controller::open(&output)?));
     idfuzz.lock().unwrap().set_control(args.control);
@@ -244,8 +303,9 @@ fn run(args: Args) -> Result<(), Error> {
     let mut objective = CrashFeedback::new();
     let mut state = StdState::new(
         StdRand::with_seed(args.idfuzz_seed.unwrap_or_else(current_nanos)),
-        InMemoryOnDiskCorpus::<BytesInput>::new(output.join("queue"))?,
-        OnDiskCorpus::new(output.join("crashes"))?,
+        InMemoryOnDiskCorpus::<BytesInput>::with_meta_format(
+            output.join("queue"), OnDiskMetadataFormat::Json)?,
+        OnDiskCorpus::with_meta_format(output.join("crashes"), OnDiskMetadataFormat::Json)?,
         &mut feedback,
         &mut objective,
     )?;
@@ -267,7 +327,7 @@ fn run(args: Args) -> Result<(), Error> {
         .timeout(Duration::from_millis(args.timeout));
     for arg in &args.target_args {
         if arg == "@@" {
-            builder.arg_input_file(output.join(".current_input"));
+            builder.arg_input_file(scratch.0.join(".current_input"));
         } else {
             builder.arg(arg);
         }
@@ -280,6 +340,7 @@ fn run(args: Args) -> Result<(), Error> {
         idfuzz_observer
     ))?;
     state.load_initial_inputs_forced(&mut fuzzer, &mut executor, &mut mgr, &[args.input])?;
+    persist_executions(shared.ptr);
     println!("Imported {} inputs", state.corpus().count());
     let mopt = StdMOptMutator::new(&mut state, havoc_mutations(), 7, 5)?;
     let havoc = DistancePowerMutationalStage::new(mopt);
@@ -291,6 +352,7 @@ fn run(args: Args) -> Result<(), Error> {
         let mut stages = tuple_list!(calibration, guided, havoc);
         fuzzer.fuzz_loop(&mut stages, &mut executor, &mut state, &mut mgr)?;
     }
+    persist_executions(shared.ptr);
     idfuzz.lock()
         .unwrap_or_else(|p| p.into_inner())
         .checkpoint()?;

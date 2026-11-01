@@ -1,5 +1,5 @@
 //! IDFuzz adaptation: mutation history, learned dominator labels, and byte-guided mutation.
-use std::{collections::HashMap, fs::{self, File, OpenOptions}, io::{BufRead, BufReader, Write},
+use std::{collections::HashMap, fs::{self, File, OpenOptions}, io::{BufRead, BufReader, BufWriter, Write},
     path::{Path, PathBuf}, process::{Child, Command}, sync::{Arc, Mutex, OnceLock}, time::Instant};
 
 use libafl::{bolts::rands::Rand, executors::ExitKind, inputs::{BytesInput, HasBytesVec, UsesInput},
@@ -43,7 +43,7 @@ struct Field { start: usize, length: usize }
 
 #[derive(Debug)]
 pub struct Controller {
-    output: PathBuf, writer: File, pending: Option<Mutation>,
+    output: PathBuf, writer: BufWriter<File>, pending: Option<Mutation>,
     rankings: HashMap<String, Vec<usize>>, modes: HashMap<String, String>,
     fields: HashMap<String, Vec<Field>>, cursor: HashMap<String, usize>,
     version: Option<u64>, control: bool, active: Option<(Child, Instant)>,
@@ -63,8 +63,8 @@ impl Controller {
             totals.retained = totals.retained.max(on_disk);
             totals.observed = totals.observed.max(totals.retained);
         }
-        let writer = OpenOptions::new().create(true).append(true)
-            .open(records_path)?;
+        let writer = BufWriter::new(OpenOptions::new().create(true).append(true)
+            .open(records_path)?);
         let mut controller = Self { output: output.to_owned(), writer, pending: None,
             rankings: HashMap::new(), modes: HashMap::new(), fields: HashMap::new(),
             cursor: HashMap::new(), version: None,
@@ -133,7 +133,8 @@ impl Controller {
                 ExitKind::Timeout => "timeout", _ => "other" },
             model_version: pending.as_ref().and_then(|x| x.model_version) };
         if serde_json::to_writer(&mut self.writer, &record).is_ok() &&
-            self.writer.write_all(b"\n").is_ok() {
+            self.writer.write_all(b"\n").is_ok() &&
+            self.writer.flush().is_ok() {
             self.totals.retained += 1;
         }
         if self.totals.retained == 128 ||

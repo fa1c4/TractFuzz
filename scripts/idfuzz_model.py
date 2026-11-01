@@ -188,12 +188,22 @@ def main():
                                     modes=modes, fields=fields,
                                     training=metrics, seed=args.seed), sort_keys=True))
     temp.replace(args.output)
-    shutil.copyfile(args.output, args.output.with_name(
-        f'{args.output.stem}-{version}{args.output.suffix}'))
-    np.savez_compressed(args.checkpoint, mean=mu, std=sigma, w1=weights[0],
+    archive = args.output.with_name(f'{args.output.stem}-{version}{args.output.suffix}')
+    try:
+        os.link(args.output, archive)
+    except OSError:
+        shutil.copyfile(args.output, archive)
+    checkpoint_temp = args.checkpoint.with_name(
+        f'{args.checkpoint.stem}.tmp{args.checkpoint.suffix}')
+    np.savez_compressed(checkpoint_temp, mean=mu, std=sigma, w1=weights[0],
                         b1=weights[1], w2=weights[2], b2=weights[3], seed=args.seed)
-    shutil.copyfile(args.checkpoint, args.checkpoint.with_name(
-        f'{args.checkpoint.stem}-{version}{args.checkpoint.suffix}'))
+    checkpoint_temp.replace(args.checkpoint)
+    archive = args.checkpoint.with_name(
+        f'{args.checkpoint.stem}-{version}{args.checkpoint.suffix}')
+    try:
+        os.link(args.checkpoint, archive)
+    except OSError:
+        shutil.copyfile(args.checkpoint, archive)
     print(json.dumps(metrics))
 
 

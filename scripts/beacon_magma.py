@@ -24,6 +24,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from magma_stop_on_trigger import read_timing, timing_metrics, wrap_command
 
 ROOT = Path(__file__).resolve().parents[1]
 MAGMA_ROOT = ROOT / "magma"
@@ -49,7 +50,8 @@ ARCHIVE_SHA256 = {
     "kkos-oniguruma-227ec0bd690207812793c09ad70024707c405376.tar.gz":
         "9f3cd4d0aeb30ba980173b47b48ea34a2ffd33d8678bc2eea647d1070b87f233",
 }
-METRIC_FIELDS = ("executions", "reach_count", "trigger_count", "would_prune", "pruned", "witness")
+METRIC_FIELDS = ("executions", "reach_count", "trigger_count", "would_prune", "pruned", "witness",
+                 "first_reach_seconds", "first_trigger_seconds", "fuzz_elapsed_seconds", "stop_reason")
 FIELDS = ("number", "project", "bug", "entry", "status", "detail", "seconds", "mode",
           *METRIC_FIELDS, "trial")
 
@@ -504,20 +506,28 @@ def run(row, seconds, mode, trial, build_only=False):
         command = ["/usr/bin/timeout", "--signal=INT", "--kill-after=5", str(seconds),
                    binary, "--input", corpus, "--output", findings,
                    "--logfile", out / f"fuzzer_{suffix}.log", "--beacon-mode", mode]
+    timing_path = out / f"campaign_{suffix}_timing.json"
+    command = wrap_command(command, bug, timing_path)
     with (out / f"campaign_{suffix}_canaries.csv").open("w") as stream:
         with log.open("a") as errors:
             result = subprocess.run([monitor, "--dump", "row", "--fetch", "watch", *command],
                                     env=env, cwd=shared, stdout=stream, stderr=errors)
     if result.returncode not in (0, 124, 130):
         return "campaign_failure", f"exit {result.returncode}; see {log}", time.monotonic() - started
-    fuzzer_log = out / f"fuzzer_{suffix}.log"
-    if not fuzzer_log.is_file() or "executions:" not in fuzzer_log.read_text(errors="replace"):
-        return "runtime_failure", "fuzzer exited before reporting executions", time.monotonic() - started
-    if is_cli and not cli_executions(findings):
-        return "runtime_failure", "CLI target produced no instrumented child executions", time.monotonic() - started
     canaries = out / f"campaign_{suffix}_canaries.csv"
     with canaries.open(newline="") as stream:
         record = next(csv.DictReader(stream), {})
+    timing = read_timing(timing_path, bug)
+    triggered = int(record.get(f"{bug}_T", "0")) > 0
+    if timing.get("stop_reason") == "trigger" and not triggered:
+        return "runtime_failure", "early stop lacked final Magma trigger count", time.monotonic() - started
+    early_trigger = triggered and timing.get("stop_reason") == "trigger"
+    fuzzer_log = out / f"fuzzer_{suffix}.log"
+    if (not early_trigger and
+            (not fuzzer_log.is_file() or "executions:" not in fuzzer_log.read_text(errors="replace"))):
+        return "runtime_failure", "fuzzer exited before reporting executions", time.monotonic() - started
+    if is_cli and not cli_executions(findings):
+        return "runtime_failure", "CLI target produced no instrumented child executions", time.monotonic() - started
     if int(record.get(f"{bug}_T", "0")) > 0:
         replay_inputs(row, mode, trial, 0, include_corpus=False)
     detail = str(canaries)
@@ -530,6 +540,7 @@ def campaign_metrics(bug, mode, trial=""):
     out = WORK_ROOT / bug / "out"
     metrics = dict.fromkeys(METRIC_FIELDS, "")
     suffix = mode if not trial else f"{mode}_{trial}"
+    metrics.update(timing_metrics(out / f"campaign_{suffix}_timing.json", bug))
     canaries = out / f"campaign_{suffix}_canaries.csv"
     if canaries.is_file():
         with canaries.open(newline="") as stream:

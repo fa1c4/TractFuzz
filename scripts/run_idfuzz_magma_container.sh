@@ -26,4 +26,5 @@ exec docker run --rm --init --network host \
     -e HOME=/tmp -e USER="$(id -un)" -e TRACTFUZZ_PAR_JOBS=1 \
     -e SVF_DIR="$repo_root/build/_deps/svf-src" \
     -e PYTHONDONTWRITEBYTECODE=1 \
+    -e TRACTFUZZ_STOP_ON_TRIGGER="${TRACTFUZZ_STOP_ON_TRIGGER:-0}" \
     "$image" python3 scripts/idfuzz_magma.py "$@"
