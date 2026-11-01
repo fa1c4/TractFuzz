@@ -7,7 +7,7 @@ results/**/status.lock
 __pycache__/
 
 # TractFuzz ignore files or dirs
-docs/
+docs/*
 plans/
 results/
 workspace/
