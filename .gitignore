@@ -14,3 +14,6 @@ workspace/
 
 
 /tractfuzz/
+
+# TractFuzz unignore files or dirs
+!docs/tractfuzz_magma_benchmarks.md

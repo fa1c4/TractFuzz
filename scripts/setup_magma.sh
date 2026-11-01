@@ -27,7 +27,14 @@ if [[ "$actual" != "$revision" ]]; then
     echo "Magma checkout is $actual; expected $revision. Refusing to change it." >&2
     exit 1
 fi
-if [[ -n "$(git -C "$destination" status --porcelain --untracked-files=no)" ]]; then
+empty_checkout=0
+if [[ -z "$(git -C "$destination" ls-files)" ]] &&
+   [[ -z "$(git -C "$destination" ls-files --others --exclude-standard)" ]] &&
+   [[ -z "$(find "$destination" -mindepth 1 -maxdepth 1 ! -name .git -print -quit)" ]]; then
+    empty_checkout=1
+fi
+if [[ "$created" == 0 && "$empty_checkout" == 0 ]] &&
+   [[ -n "$(git -C "$destination" status --porcelain --untracked-files=no)" ]]; then
     echo "Magma has local tracked changes; refusing to overwrite them." >&2
     exit 1
 fi
@@ -42,11 +49,21 @@ git -C "$destination" sparse-checkout set \
     '!/targets/*/corpus/'
 git -C "$destination" checkout -f "$revision"
 
+add_sparse_path() {
+    local path="$1"
+    local -a patterns=()
+    if git -C "$destination" sparse-checkout add "$path" 2>/dev/null; then
+        return 0
+    fi
+    mapfile -t patterns < <(git -C "$destination" sparse-checkout list)
+    git -C "$destination" sparse-checkout set "${patterns[@]}" "$path"
+}
+
 if [[ "${MAGMA_INCLUDE_CORPORA:-1}" == 1 ]]; then
     for project in libpng libsndfile libtiff libxml2 lua openssl php poppler sqlite3; do
         completed=0
         for attempt in 1 2 3 4 5; do
-            if git -C "$destination" sparse-checkout add "/targets/$project/corpus/"; then
+            if add_sparse_path "/targets/$project/corpus/"; then
                 completed=1
                 break
             fi
