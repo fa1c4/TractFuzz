@@ -7,6 +7,7 @@ the schedule without building, fuzzing, making model calls, or changing results.
 
 import argparse
 import csv
+import ctypes
 import fcntl
 import hashlib
 import json
@@ -412,16 +413,17 @@ def stage_evaluation(source_root: Path, destination: Path, arms: list[str],
                     path.write_text(rebased)
         if "idfuzz" not in arms:
             stage_frozen_pbfuzz_inputs(source_root, destination, rows)
-    binary = destination / "bin/eval-workspace-landlock"
-    binary.parent.mkdir(exist_ok=True)
-    build_env = dict(os.environ, TMPDIR=str(destination / "tmp"),
-                     HOME=str(destination / "home"))
-    subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror",
-                    str(destination / "scripts/eval_workspace_landlock.c"), "-o", str(binary)],
-                   env=build_env, check=True)
+    if "pbfuzz" in arms:
+        binary = destination / "bin/eval-workspace-landlock"
+        binary.parent.mkdir(exist_ok=True)
+        build_env = dict(os.environ, TMPDIR=str(destination / "tmp"),
+                         HOME=str(destination / "home"))
+        subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror",
+                        str(destination / "scripts/eval_workspace_landlock.c"),
+                        "-o", str(binary)], env=build_env, check=True)
 
 
-def enter_evaluation(source_root: Path, destination: Path) -> None:
+def enter_evaluation(source_root: Path, destination: Path, use_sandbox: bool) -> None:
     environment = dict(os.environ)
     key_script = Path(os.environ.get("PBFUZZ_KEY_SCRIPT",
                              str(Path.home() / "api_keys/set_api_key.sh"))).expanduser().resolve()
@@ -440,13 +442,31 @@ def enter_evaluation(source_root: Path, destination: Path) -> None:
         path = destination / relative
         path.mkdir(parents=True, exist_ok=True)
         environment[name] = str(path)
-    sandbox = destination / "bin/eval-workspace-landlock"
     script = destination / "scripts/evaluate_magma_baselines.py"
-    os.execve(sandbox, [str(sandbox), str(destination), "--", sys.executable,
-                        str(script), *sys.argv[1:]], environment)
+    if use_sandbox:
+        sandbox = destination / "bin/eval-workspace-landlock"
+        os.execve(sandbox, [str(sandbox), str(destination), "--", sys.executable,
+                            str(script), *sys.argv[1:]], environment)
+    print("PBFuzz is not selected; running without the host Landlock sandbox.", flush=True)
+    os.execve(sys.executable, [sys.executable, str(script), *sys.argv[1:]], environment)
+
+
+def landlock_abi() -> int:
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        result = libc.syscall(444, None, 0, 1)
+    except (AttributeError, OSError):
+        return 0
+    return result if result >= 0 else 0
 
 
 def preflight(arms: list[str], rows: list[tuple[str, str, str]]) -> None:
+    if "pbfuzz" in arms:
+        abi = landlock_abi()
+        if abi < 3:
+            raise RuntimeError(
+                f"Landlock ABI 3 or newer is required (Linux >= 6.2) for PBFuzz; "
+                f"current kernel provides ABI {abi}")
     if not (ROOT / "magma/.git").is_dir():
         raise RuntimeError("Magma is absent; run scripts/setup_magma.sh first")
     revision = subprocess.check_output(
@@ -923,7 +943,7 @@ def main() -> None:
         stage_evaluation(source_root, eval_root, arms, rows)
         if args.eval_name is None:
             sys.argv.extend(["--eval-name", run_id])
-        enter_evaluation(source_root, eval_root)
+        enter_evaluation(source_root, eval_root, "pbfuzz" in arms)
         raise AssertionError("execve returned")
     if ROOT != eval_root:
         raise RuntimeError("staged evaluation root does not match workspace/<eval-name>")

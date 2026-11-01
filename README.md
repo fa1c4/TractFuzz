@@ -96,7 +96,9 @@ The benchmark is the exact 60 bug/entry pairs in [docs/tractfuzz_magma_benchmark
 | [IDFuzz](fuzzers/idfuzz/METHOD.md) | Dominator feedback, asynchronous learned byte guidance, and LibAFLGo mutation | Same seed as the AFLGo control in each trial |
 | [PBFuzz](fuzzers/pbfuzz/METHOD.md) | Current author DeepSeek Harness agent on frozen Magma binaries through a monitor oracle | Standalone fixed-binary adaptation; no LibAFLGo seed-import campaign is implied |
 
-Build Magma and the four LibAFLGo method variants first. Prebuild both Docker images before evaluation. PBFuzz also requires the pinned author plugin and the DeepSeek-compatible `~/api_keys/set_api_key.sh`; follow [its build instructions](fuzzers/pbfuzz/BUILD.md). Its fixed-binary runs require the 60 IDFuzz Magma target builds; the combined command runs IDFuzz before PBFuzz. For PBFuzz alone, build those targets first. AFLGo is the same-binary IDFuzz control used for the paired comparison; it is not a separately built upstream AFLGo binary.
+Build Magma and the four LibAFLGo method variants first. Prebuild both Docker images before evaluation. PBFuzz also requires the pinned author plugin; run `scripts/build_pbfuzz.sh` (details in [its build instructions](fuzzers/pbfuzz/BUILD.md)). Campaigns additionally require the DeepSeek-compatible `~/api_keys/set_api_key.sh`; building the plugin does not. Its fixed-binary runs require the 60 IDFuzz Magma target builds; the combined command runs IDFuzz before PBFuzz. For PBFuzz alone, build those targets first. AFLGo is the same-binary IDFuzz control used for the paired comparison; it is not a separately built upstream AFLGo binary.
+
+PBFuzz evaluation requires Linux 6.2 or newer with Landlock ABI 3. Evaluations that exclude PBFuzz skip the host Landlock sandbox and can run on older kernels.
 
 ```sh
 scripts/setup_magma.sh
@@ -106,6 +108,8 @@ scripts/build_beacon.sh
 scripts/build_selectfuzz.sh
 scripts/build_halo.sh
 scripts/build_idfuzz.sh
+# PBFuzz only; requires Linux 6.2 or newer.
+scripts/build_pbfuzz.sh
 docker build -f scripts/beacon-magma.Dockerfile -t tractfuzz-beacon-magma:ubuntu24.04 scripts
 docker build -f scripts/idfuzz-magma.Dockerfile -t tractfuzz-idfuzz-magma:ubuntu24.04 scripts
 # For PBFuzz alone, if frozen IDFuzz binaries are absent:
@@ -119,6 +123,9 @@ python3 scripts/evaluate_magma_baselines.py --trials 1 --fuzz-time 24h --paralle
 
 # Repeat three trials. Use the same evaluation name to resume.
 python3 scripts/evaluate_magma_baselines.py --trials 3 --fuzz-time 24h --parallel-worker 64 --eval-name magma24h_v3
+
+# Four LibAFLGo methods only; excludes PBFuzz and does not require host Landlock.
+python3 scripts/evaluate_magma_baselines.py --baselines beacon selectfuzz halo idfuzz --trials 5 --fuzz-time 24h --parallel-worker 12 --eval-name magma24h_v1
 ```
 
 `--trials` defaults to `1`; `--fuzz-time` defaults to `24h` and accepts `s`, `m`, `h`, or `d` (a bare number means seconds). The time is **per bug and per arm**. `--parallel-worker` defaults to `64` and uses at most that many logical CPUs from the caller's affinity mask. Each active campaign gets one distinct CPU: Docker uses `--cpuset-cpus`, and PBFuzz host processes inherit CPU affinity. The six arms schedule 360 target-days of campaigns per trial, excluding build and analysis time. PBFuzz gets the requested fuzz-stage cap plus up to one hour for agent planning and teardown; it can stop earlier, and its wall time is not a pure fuzzer-execution budget.

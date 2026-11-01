@@ -7,10 +7,10 @@ mkdir -p "$source_dir"
 fetch_git() {
     local url="$1" dest="$2" commit="$3"
     if [[ ! -d "$dest/.git" ]]; then
-        git clone "$url" "$dest"
+        git -c http.version=HTTP/1.1 clone "$url" "$dest"
     fi
     if [[ "$(git -C "$dest" rev-parse HEAD)" != "$commit" ]]; then
-        git -C "$dest" fetch --depth 1 origin "$commit"
+        git -C "$dest" -c http.version=HTTP/1.1 fetch --depth 1 origin "$commit"
         git -C "$dest" checkout --detach "$commit"
     fi
     [[ "$(git -C "$dest" rev-parse HEAD)" == "$commit" ]]
@@ -20,12 +20,29 @@ fetch_git https://github.com/sgzeng/pbfuzz.git "$source_dir/github" \
 fetch_git https://github.com/R-Fuzz/magma.git "$source_dir/magma-author" \
     a6ec7b915a478306d0727f07848172500c3c4e11
 archive="$source_dir/artifact.zip"
-if [[ ! -s "$archive" ]]; then
-    curl -fL --retry 3 'https://zenodo.org/records/20770567/files/artifact.zip?download=1' -o "$archive"
+archive_url='https://zenodo.org/records/20770567/files/artifact.zip?download=1'
+archive_sha256=76bccbead8b7c8bf5a5dde682eee7c7c0edbdca234dc4b0a5c95b15f85b0e6d0
+archive_ok=0
+if [[ -s "$archive" ]] &&
+   printf '%s  %s\n' "$archive_sha256" "$archive" |
+       sha256sum -c - >/dev/null 2>&1; then
+    archive_ok=1
 fi
-printf '%s  %s\n' \
-    76bccbead8b7c8bf5a5dde682eee7c7c0edbdca234dc4b0a5c95b15f85b0e6d0 \
-    "$archive" | sha256sum -c -
+if (( ! archive_ok )); then
+    for attempt in 1 2 3 4 5; do
+        if curl -fL --http1.1 --retry 5 --retry-delay 3 -C - \
+            "$archive_url" -o "$archive"; then
+            if printf '%s  %s\n' "$archive_sha256" "$archive" |
+               sha256sum -c - >/dev/null 2>&1; then
+                archive_ok=1
+                break
+            fi
+            rm -f "$archive"
+        fi
+        sleep "$((attempt * 3))"
+    done
+fi
+printf '%s  %s\n' "$archive_sha256" "$archive" | sha256sum -c -
 python3 - "$archive" "$source_dir/zenodo" <<'PY'
 import sys, zipfile
 from pathlib import Path, PurePosixPath
